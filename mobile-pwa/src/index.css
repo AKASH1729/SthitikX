@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .pt-safe  { padding-top: env(safe-area-inset-top, 1rem); }
+  .pb-safe  { padding-bottom: env(safe-area-inset-bottom, 1rem); }
+  .min-h-dvh { min-height: 100dvh; }
+}
+
+html, body, #root {
+  height: 100%;
+  overscroll-behavior: none;
+}

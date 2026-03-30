@@ -1,0 +1,98 @@
+# ----------------------------
+# Node.js
+# ----------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ----------------------------
+# Environment files (IMPORTANT 🔥)
+# ----------------------------
+.env
+.env.local
+.env.development
+.env.production
+
+# ----------------------------
+# Build folders
+# ----------------------------
+build/
+dist/
+.next/
+out/
+
+# ----------------------------
+# Logs
+# ----------------------------
+logs/
+*.log
+
+# ----------------------------
+# OS files
+# ----------------------------
+.DS_Store
+Thumbs.db
+
+# ----------------------------
+# IDE / Editor
+# ----------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ----------------------------
+# Docker
+# ----------------------------
+docker-compose.override.yml
+*.env.docker
+
+# ----------------------------
+# Coverage / Testing
+# ----------------------------
+coverage/
+.nyc_output/
+
+# ----------------------------
+# Cache
+# ----------------------------
+.cache/
+.parcel-cache/
+
+# ----------------------------
+# Temporary files
+# ----------------------------
+tmp/
+temp/
+
+# ----------------------------
+# MongoDB / Local DB
+# ----------------------------
+data/
+*.db
+
+# ----------------------------
+# Uploads (if storing files)
+# ----------------------------
+uploads/
+public/uploads/
+
+# ----------------------------
+# React specific
+# ----------------------------
+frontend/node_modules/
+frontend/build/
+
+# ----------------------------
+# Backend specific
+# ----------------------------
+backend/node_modules/
+
+# ----------------------------
+# Secrets / Keys 🔐
+# ----------------------------
+*.pem
+*.key
+*.crt
