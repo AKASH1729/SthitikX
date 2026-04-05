@@ -33,34 +33,21 @@ const app = express();
 const server = http.createServer(app);
 
 // ─── CORS ─────────────────────────────────────────────
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:3001",
-  "http://192.168.1.7:3000",
-  "http://192.168.1.7:3001"
-];
-
 app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
-  },
+  origin: true,
   credentials: true,
 }));
 
-// ─── Socket.io ───────────────────────────────────────
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins, // ✅ FIXED
+    origin: true,
     methods: ['GET', 'POST'],
     credentials: true,
   },
 });
+
+// ─── Socket.io ───────────────────────────────────────
+
 
 // ─── Security Middleware ─────────────────────────────
 app.use(helmet());
