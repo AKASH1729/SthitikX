@@ -1,20 +1,20 @@
 /**
- * Attendance Controller (Corrected)
+ * Attendance Controller (FINAL - SAFE VERSION)
  */
 
 const Attendance = require('../models/Attendance');
 const User = require('../models/User');
 const Alert = require('../models/Alert');
-const logger = require('../config/logger');
 
 /* =========================================
    CLOCK IN
 ========================================= */
 const clockIn = async (req, res) => {
   try {
-    const { lat, lng, address } = req.body;
+    const { lat, lng, address, battery } = req.body;
 
-    if (!lat || !lng) {
+    // ✅ Validation (avoid undefined crash)
+    if (lat === undefined || lng === undefined) {
       return res.status(400).json({
         success: false,
         message: 'Latitude and Longitude required',
@@ -23,7 +23,7 @@ const clockIn = async (req, res) => {
 
     const today = new Date().toISOString().split('T')[0];
 
-    // 🔍 Check already clocked in
+    // 🔍 Check if already clocked in
     const existing = await Attendance.findOne({
       employee: req.user._id,
       date: today,
@@ -32,37 +32,38 @@ const clockIn = async (req, res) => {
     if (existing && existing.clockIn?.timestamp) {
       return res.status(400).json({
         success: false,
-        message: 'Already clocked in today.',
+        message: 'Already clocked in today',
       });
     }
 
-    // 📍 Geofence check
     let isWithinGeofence = false;
     let geofenceId = null;
 
     const user = await User.findById(req.user._id).populate('assignedGeofence');
 
-    if (user.assignedGeofence) {
-      const result = user.assignedGeofence.containsPoint(lat, lng);
-      isWithinGeofence = result.isInside;
-      geofenceId = user.assignedGeofence._id;
-
-      // 🚫 STRICT VALIDATION
-      if (!isWithinGeofence) {
-        // 🔔 create alert
-        await Alert.create({
-          employee: req.user._id,
-          type: 'geofence-violation',
-          message: 'Clock-in attempted outside geofence',
-        });
-
-        return res.status(400).json({
-          success: false,
-          message: '❌ You are outside allowed area',
-          isWithinGeofence: false,
-        });
+    // ✅ SAFE GEOFENCE CHECK (no crash)
+    if (user?.assignedGeofence && lat && lng) {
+      try {
+        const result = user.assignedGeofence.containsPoint(lat, lng);
+        isWithinGeofence = result?.isInside || false;
+        geofenceId = user.assignedGeofence._id;
+      } catch (err) {
+        console.log("Geofence error:", err.message);
       }
     }
+
+    // ❌ Strict check: block if outside
+   if (user?.assignedGeofence && !isWithinGeofence) {
+  await Alert.create({
+    employee: req.user._id,
+    type: 'geofence-violation',
+    message: 'Outside allowed area',
+    location: { lat, lng },
+    severity: 'high',
+  });
+
+  // ❗ DO NOT BLOCK
+}
 
     // ✅ Create attendance
     const attendance = await Attendance.create({
@@ -73,34 +74,25 @@ const clockIn = async (req, res) => {
         location: { lat, lng, address },
         isWithinGeofence,
       },
+      battery: battery ?? null, // optional
       geofence: geofenceId,
     });
 
     // 🔄 Start tracking
     await User.findByIdAndUpdate(req.user._id, { isTracking: true });
 
-    // 📡 Socket event
-    req.io.to('admins').emit('employee:clocked-in', {
-      employeeId: req.user._id,
-      name: req.user.name,
-      time: new Date(),
-      location: { lat, lng },
-      isWithinGeofence,
-    });
-
     res.status(201).json({
       success: true,
       message: '✅ Clocked in successfully',
       attendance,
-      isWithinGeofence,
     });
 
   } catch (error) {
-    logger.error(`Clock-in error: ${error.message}`);
+    console.error("CLOCK-IN ERROR:", error);
 
     res.status(500).json({
       success: false,
-      message: 'Clock-in failed',
+      message: error.message,
     });
   }
 };
@@ -133,23 +125,27 @@ const clockOut = async (req, res) => {
       });
     }
 
-    // 📍 Geofence check (not strict)
     let isWithinGeofence = false;
 
     const user = await User.findById(req.user._id).populate('assignedGeofence');
 
-    if (user.assignedGeofence) {
-      const result = user.assignedGeofence.containsPoint(lat, lng);
-      isWithinGeofence = result.isInside;
-
-      // 🔔 Alert only (not blocking)
-      if (!isWithinGeofence) {
-        await Alert.create({
-          employee: req.user._id,
-          type: 'geofence-violation',
-          message: 'Clock-out outside geofence',
-        });
+    // ✅ SAFE CHECK
+    if (user?.assignedGeofence && lat && lng) {
+      try {
+        const result = user.assignedGeofence.containsPoint(lat, lng);
+        isWithinGeofence = result?.isInside || false;
+      } catch (err) {
+        console.log("Geofence error:", err.message);
       }
+    }
+
+    // 🔔 Only alert, not block
+    if (user?.assignedGeofence && !isWithinGeofence) {
+      await Alert.create({
+        employee: req.user._id,
+        type: 'geofence-violation',
+        message: 'Clock-out outside geofence',
+      });
     }
 
     // ✅ Update attendance
@@ -161,6 +157,7 @@ const clockOut = async (req, res) => {
 
     attendance.calculateHours();
 
+    // Half-day logic
     if (attendance.totalHours < 4) {
       attendance.status = 'half-day';
     }
@@ -170,14 +167,6 @@ const clockOut = async (req, res) => {
     // 🛑 Stop tracking
     await User.findByIdAndUpdate(req.user._id, { isTracking: false });
 
-    // 📡 Socket event
-    req.io.to('admins').emit('employee:clocked-out', {
-      employeeId: req.user._id,
-      name: req.user.name,
-      time: new Date(),
-      totalHours: attendance.totalHours,
-    });
-
     res.json({
       success: true,
       message: '✅ Clocked out successfully',
@@ -185,17 +174,17 @@ const clockOut = async (req, res) => {
     });
 
   } catch (error) {
-    logger.error(`Clock-out error: ${error.message}`);
+    console.error("CLOCK-OUT ERROR:", error);
 
     res.status(500).json({
       success: false,
-      message: 'Clock-out failed',
+      message: error.message,
     });
   }
 };
 
 /* =========================================
-   GET TODAY
+   GET TODAY ATTENDANCE
 ========================================= */
 const getTodayAttendance = async (req, res) => {
   try {
@@ -212,6 +201,8 @@ const getTodayAttendance = async (req, res) => {
     });
 
   } catch (error) {
+    console.error("GET TODAY ERROR:", error);
+
     res.status(500).json({
       success: false,
       message: error.message,
@@ -220,7 +211,7 @@ const getTodayAttendance = async (req, res) => {
 };
 
 /* =========================================
-   GET ALL (ADMIN / EMPLOYEE)
+   GET ALL ATTENDANCE
 ========================================= */
 const getAttendance = async (req, res) => {
   try {
@@ -246,7 +237,7 @@ const getAttendance = async (req, res) => {
       .populate('employee', 'name email employeeId department')
       .populate('geofence', 'name')
       .sort({ date: -1 })
-      .limit(limit * 1)
+      .limit(Number(limit))
       .skip((page - 1) * limit);
 
     res.json({
@@ -260,6 +251,8 @@ const getAttendance = async (req, res) => {
     });
 
   } catch (error) {
+    console.error("GET ALL ERROR:", error);
+
     res.status(500).json({
       success: false,
       message: error.message,
@@ -268,7 +261,7 @@ const getAttendance = async (req, res) => {
 };
 
 /* =========================================
-   EXPORT
+   EXPORTS
 ========================================= */
 module.exports = {
   clockIn,

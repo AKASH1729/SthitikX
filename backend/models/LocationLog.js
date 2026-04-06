@@ -40,7 +40,7 @@ const locationLogSchema = new mongoose.Schema({
   // Attendance session reference
   attendance: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Attendance',
+    ref: 'Attendance', 
   },
   timestamp: {
     type: Date,

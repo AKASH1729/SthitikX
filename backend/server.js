@@ -26,6 +26,9 @@ const dashboardRoutes = require('./routes/dashboard');
 const uploadRoutes = require('./routes/upload');
 const getEmployeeData = require('./routes/getEmployeeData');
 
+const locationRoutess = require("./routes/locationRoutes");
+
+
 // 🚫 DO NOT IMPORT SEEDER HERE
 
 // App init
@@ -87,6 +90,7 @@ app.use('/api/geofences', geofenceRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api', uploadRoutes);
 app.use('/api/employee-data', getEmployeeData);
+app.use("/api/location", locationRoutess);
 
 // Health check
 app.get('/api/health', (req, res) => {

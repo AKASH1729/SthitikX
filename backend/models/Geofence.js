@@ -12,7 +12,7 @@ const geofenceSchema = new mongoose.Schema({
     trim: true,
   },
   description: {
-    type: String,
+    type: String, 
     trim: true,
   },
   // Center point of the geofence

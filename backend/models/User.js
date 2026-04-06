@@ -1,91 +1,102 @@
-/**
- * User Model
- * Stores admin and employee accounts
- */
-
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
 const userSchema = new mongoose.Schema({
   name: {
     type: String,
-    required: [true, 'Name is required'],
+    required: true,
     trim: true,
-    maxlength: [100, 'Name cannot exceed 100 characters'],
+    maxlength: 100,
   },
+
   email: {
     type: String,
-    required: [true, 'Email is required'],
+    required: true,
     unique: true,
     lowercase: true,
     trim: true,
-    match: [/^\S+@\S+\.\S+$/, 'Please provide a valid email'],
+    match: /^\S+@\S+\.\S+$/,
   },
+
   password: {
     type: String,
-    required: [true, 'Password is required'],
-    minlength: [6, 'Password must be at least 6 characters'],
-    select: false, // Don't return password in queries by default
+    required: true,
+    minlength: 6,
+    select: false,
   },
+
   role: {
     type: String,
     enum: ['admin', 'employee'],
     default: 'employee',
   },
+
   employeeId: {
     type: String,
     unique: true,
-    sparse: true, // Allows multiple null values
+    sparse: true,
   },
-  department: {
-    type: String,
-    trim: true,
-  },
-  phone: {
-    type: String,
-    trim: true,
-  },
+
+  department: String,
+  phone: String,
+
   avatar: {
     type: String,
     default: null,
   },
-  // Assigned work zone for geo-fencing
+
   assignedGeofence: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Geofence',
     default: null,
   },
+
   isActive: {
     type: Boolean,
     default: true,
   },
-  // Last known location
+
+  // =========================
+  // 🔥 TRACKING FIELDS (SYSTEM ONLY)
+  // =========================
   lastLocation: {
-    lat: Number,
-    lng: Number,
-    timestamp: Date,
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
+    timestamp: { type: Date, default: null },
   },
-  // Tracking status
+
   isTracking: {
     type: Boolean,
     default: false,
   },
+
+  battery: {
+    type: Number,
+    default: null,
+  },
+
   refreshToken: {
     type: String,
     select: false,
   },
-}, {
-  timestamps: true,
-  toJSON: { virtuals: true },
-  toObject: { virtuals: true },
-});
 
-// Virtual: full initials for avatar fallback
+}, { timestamps: true });
+
+/* =========================
+   INITIALS
+========================= */
 userSchema.virtual('initials').get(function () {
-  return this.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+  return this.name
+    .split(' ')
+    .map(n => n[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2);
 });
 
-// Hash password before saving
+/* =========================
+   HASH PASSWORD
+========================= */
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
   const salt = await bcrypt.genSalt(12);
@@ -93,7 +104,9 @@ userSchema.pre('save', async function (next) {
   next();
 });
 
-// Auto-generate employeeId
+/* =========================
+   AUTO EMPLOYEE ID
+========================= */
 userSchema.pre('save', async function (next) {
   if (!this.employeeId && this.role === 'employee') {
     const count = await mongoose.model('User').countDocuments({ role: 'employee' });
@@ -102,14 +115,37 @@ userSchema.pre('save', async function (next) {
   next();
 });
 
-// Method: Compare entered password with hashed
+/* =========================
+   PASSWORD MATCH
+========================= */
 userSchema.methods.matchPassword = async function (enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
 };
 
-// Method: Update last location
-userSchema.methods.updateLocation = async function (lat, lng) {
-  this.lastLocation = { lat, lng, timestamp: new Date() };
+/* =========================
+   UPDATE LOCATION (SYSTEM ONLY)
+========================= */
+userSchema.methods.updateLocation = async function (lat, lng, battery = null) {
+  this.lastLocation = {
+    lat,
+    lng,
+    timestamp: new Date(),
+  };
+
+  if (battery !== null) {
+    this.battery = battery;
+  }
+
+  this.isTracking = true;
+
+  await this.save();
+};
+
+/* =========================
+   SET OFFLINE
+========================= */
+userSchema.methods.setOffline = async function () {
+  this.isTracking = false;
   await this.save();
 };
 

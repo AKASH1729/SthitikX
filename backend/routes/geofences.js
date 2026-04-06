@@ -33,4 +33,4 @@ router.delete('/delete/:id', authorize('admin'), deleteGeofence);
 // ✅ CHECK geofence (IMPORTANT for frontend)
 router.post('/check', checkGeofence);
 
-module.exports = router;
+module.exports = router;  

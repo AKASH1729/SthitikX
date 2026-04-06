@@ -119,6 +119,6 @@ const logout = async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, message: 'Logout failed.' });
   }
-};
+}; 
 
 module.exports = { login, refreshToken, getMe, logout };
