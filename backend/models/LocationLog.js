@@ -1,18 +1,26 @@
 /**
- * LocationLog Model
- * Stores GPS breadcrumbs for route tracking
+ * LocationLog Model (FINAL - PAGARGEO READY)
  */
 
 const mongoose = require('mongoose');
 
 const locationLogSchema = new mongoose.Schema({
+  // 🔵 ObjectId reference (for populate)
   employee: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
     index: true,
   },
-  // GeoJSON point for geospatial queries
+
+  // 🟢 STRING ID (VERY IMPORTANT FOR YOUR SYSTEM)
+  employeeId: {
+    type: String,
+    required: true,
+    index: true,
+  },
+
+  // 🌍 GeoJSON point
   location: {
     type: {
       type: String,
@@ -20,78 +28,108 @@ const locationLogSchema = new mongoose.Schema({
       default: 'Point',
     },
     coordinates: {
-      type: [Number], // [longitude, latitude] - GeoJSON order
+      type: [Number], // [lng, lat]
       required: true,
     },
   },
-  // Human-readable lat/lng for easy access
+
+  // 📍 Easy access
   lat: { type: Number, required: true },
   lng: { type: Number, required: true },
-  // Device accuracy in meters
+
+  // 📊 Sensors
   accuracy: { type: Number, default: null },
-  // Speed in m/s (from GPS)
-  speed: { type: Number, default: null },
-  // Compass heading
+  speed: { type: Number, default: 0 },   // m/s
   heading: { type: Number, default: null },
-  // Date string for daily grouping
+
+  // 📅 Date grouping
   date: { type: String, required: true, index: true },
-  // Whether inside assigned geofence at this moment
+
+  // 🧭 Geofence
   isInsideGeofence: { type: Boolean, default: true },
-  // Attendance session reference
+
+  // 🧾 Attendance link
   attendance: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Attendance', 
+    ref: 'Attendance',
   },
+
+  // ⏱ Timestamp
   timestamp: {
     type: Date,
     default: Date.now,
     index: true,
   },
+
 }, {
-  timestamps: false, // Using custom timestamp field
+  timestamps: false,
 });
 
-// Geospatial index for location queries
-locationLogSchema.index({ location: '2dsphere' });
-locationLogSchema.index({ employee: 1, date: 1, timestamp: 1 });
 
-// Static: Get movement history for an employee on a date
+// ==============================
+// 📌 INDEXES
+// ==============================
+locationLogSchema.index({ location: '2dsphere' });
+locationLogSchema.index({ employeeId: 1, date: 1, timestamp: 1 });
+
+
+// ==============================
+// 📌 GET DAILY ROUTE (FIXED)
+// ==============================
 locationLogSchema.statics.getDailyRoute = async function (employeeId, date) {
-  return this.find({ employee: employeeId, date })
+  return this.find({
+    employeeId: employeeId,   // ✅ FIXED (was employee)
+    date: date
+  })
     .sort({ timestamp: 1 })
-    .select('lat lng timestamp isInsideGeofence speed accuracy');
+    .select('lat lng timestamp speed accuracy isInsideGeofence');
 };
 
-// Static: Calculate total distance traveled (in km)
+
+// ==============================
+// 📌 TOTAL DISTANCE
+// ==============================
 locationLogSchema.statics.calculateDistance = function (locations) {
   if (locations.length < 2) return 0;
 
   let totalDistance = 0;
+
   for (let i = 1; i < locations.length; i++) {
     totalDistance += haversineDistance(
-      locations[i - 1].lat, locations[i - 1].lng,
-      locations[i].lat, locations[i].lng
+      locations[i - 1].lat,
+      locations[i - 1].lng,
+      locations[i].lat,
+      locations[i].lng
     );
   }
+
   return parseFloat(totalDistance.toFixed(2));
 };
 
-/**
- * Haversine formula - calculates distance between two coordinates
- * @returns distance in kilometers
- */
+
+// ==============================
+// 📌 HAVERSINE FORMULA
+// ==============================
 function haversineDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // Earth radius in km
+  const R = 6371;
+
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
+
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    Math.cos(toRad(lat1)) *
+    Math.cos(toRad(lat2)) *
+    Math.sin(dLon / 2) *
+    Math.sin(dLon / 2);
+
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
   return R * c;
 }
 
-function toRad(deg) { return deg * (Math.PI / 180); }
+function toRad(deg) {
+  return deg * (Math.PI / 180);
+}
 
 module.exports = mongoose.model('LocationLog', locationLogSchema);

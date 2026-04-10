@@ -226,16 +226,23 @@
 /**
  * Location Controller (FINAL - REALTIME TRACKING)
  */
+
+/**
+ * Location Controller (FINAL - PAGARGEO READY)
+ */
+
 const User = require('../models/User');
 const LocationLog = require('../models/LocationLog');
 
+
 /* =========================================
-   UPDATE LOCATION (LIVE TRACKING)
+   📍 UPDATE LOCATION (LIVE TRACKING)
 ========================================= */
 const updateLocation = async (req, res) => {
   try {
-    const { lat, lng, battery } = req.body;
+    const { lat, lng, battery, speed = 0, accuracy = null } = req.body;
 
+    // ✅ VALIDATION
     if (lat == null || lng == null) {
       return res.status(400).json({
         success: false,
@@ -243,16 +250,17 @@ const updateLocation = async (req, res) => {
       });
     }
 
-    const today = new Date().toISOString().split('T')[0];
+    const now = new Date();
+    const today = now.toISOString().split("T")[0];
 
     /* =========================
-       UPDATE USER LIVE LOCATION
+       UPDATE USER LIVE DATA
     ========================= */
     await User.findByIdAndUpdate(req.user._id, {
       lastLocation: {
         lat,
         lng,
-        timestamp: new Date()
+        timestamp: now
       },
       battery: battery ?? null,
       isTracking: true
@@ -262,90 +270,127 @@ const updateLocation = async (req, res) => {
        SAVE LOCATION HISTORY
     ========================= */
     await LocationLog.create({
-      employee: req.user._id,
+      employee: req.user._id,               // ObjectId
+      employeeId: req.user.employeeId,      // 🔥 STRING ID (IMPORTANT)
+
       location: {
         type: "Point",
-        coordinates: [lng, lat] // 🔥 REQUIRED
+        coordinates: [lng, lat],            // [lng, lat]
       },
+
       lat,
       lng,
+      speed,
+      accuracy,
       date: today,
-      timestamp: new Date()
+      timestamp: now
     });
 
     /* =========================
-       REALTIME SOCKET EMIT
+       SOCKET UPDATE (REALTIME)
     ========================= */
-    req.io.emit('location:update', { // 🔥 FIXED (no room issue)
-      employeeId: req.user._id,
-      lat,
-      lng,
-      battery,
-      timestamp: new Date()
-    });
+    if (req.io) {
+      req.io.to("admins").emit("location:update", {
+        employeeId: req.user.employeeId,
+        lat,
+        lng,
+        battery,
+        speed,
+        timestamp: now
+      });
+    }
 
-    res.json({
-      success: true
+    return res.status(200).json({
+      success: true,
+      message: "Location updated successfully"
     });
 
   } catch (error) {
-    console.error("LOCATION ERROR:", error);
-    res.status(500).json({
+    console.error("❌ LOCATION UPDATE ERROR:", error);
+
+    return res.status(500).json({
       success: false,
       message: error.message
     });
   }
 };
 
+
 /* =========================================
-   GET LIVE LOCATIONS
+   📡 GET LIVE LOCATIONS (ADMIN VIEW)
 ========================================= */
 const getLiveLocations = async (req, res) => {
   try {
     const employees = await User.find({
-      role: 'employee',
+      role: "employee",
       isActive: true
-    }).select(
-      'name employeeId department lastLocation isTracking battery'
-    );
+    }).select("name employeeId lastLocation battery");
+
+    const now = new Date();
+
+    const updatedEmployees = employees.map(emp => {
+      const last = emp.lastLocation?.timestamp;
+
+      const isOnline =
+        last && (now - new Date(last)) < 30000; // 30 sec
+
+      return {
+        ...emp.toObject(),
+        isOnline
+      };
+    });
 
     res.json({
       success: true,
-      employees
+      employees: updatedEmployees
     });
 
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    console.error(error);
+    res.status(500).json({ message: error.message });
   }
 };
 
+
 /* =========================================
-   GET ROUTE HISTORY (FIXED)
+   🛣 GET ROUTE HISTORY (FOR MAP)
 ========================================= */
 const getRouteHistory = async (req, res) => {
   try {
     const { employeeId } = req.params;
 
-    const logs = await LocationLog.find({ employee: employeeId })
-      .sort({ timestamp: 1 }) // 🔥 FIXED
-      .limit(200);
+    if (!employeeId) {
+      return res.status(400).json({
+        success: false,
+        message: "employeeId required"
+      });
+    }
 
-    res.json({
+    const logs = await LocationLog.find({
+      employeeId: employeeId   // 🔥 USE STRING ID
+    })
+      .sort({ timestamp: 1 })
+      .limit(1000);
+
+    return res.status(200).json({
       success: true,
       logs
     });
 
   } catch (error) {
-    res.status(500).json({
+    console.error("❌ ROUTE HISTORY ERROR:", error);
+
+    return res.status(500).json({
       success: false,
       message: error.message
     });
   }
 };
 
+
+/* =========================================
+   📦 EXPORT (FINAL)
+========================================= */
 module.exports = {
   updateLocation,
   getLiveLocations,

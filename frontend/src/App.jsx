@@ -1,38 +1,45 @@
-
-
-
-
 /**
- * App.jsx — Root component with routing and providers
+ * App.jsx — FINAL PAGARGEO TABS VERSION
  */
 
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+
+// CONTEXT
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SocketProvider } from './context/SocketContext';
 
-// Pages
+// PAGES
 import LoginPage from './pages/LoginPage';
 import AdminDashboard from './pages/AdminDashboard';
 import LiveMapPage from './pages/LiveMapPage';
+import LiveMapLayout from './pages/LiveMapLayout';   // 🔥 IMPORTANT
+import TimelinePage from './pages/TimelinePage';
+import TrackingDashboard from './pages/TrackingDashboard';
 import AttendancePage from './pages/AttendancePage';
 import EmployeesPage from './pages/EmployeesPage';
 import GeofencePage from './pages/GeofencePage';
 import AlertsPage from './pages/AlertsPage';
 import EmployeeHistoryPage from './pages/EmployeeHistoryPage';
-import UploadExcelPage from "./pages/UploadExcelPage";
-import ViewUploadsPage from "./pages/ViewUploadsPage"; // ✅ ADDED
+import UploadExcelPage from './pages/UploadExcelPage';
+import ViewUploadsPage from './pages/ViewUploadsPage';
 
-// Components
+// COMPONENTS
 import Layout from './components/Shared/Layout';
 import LoadingSpinner from './components/Shared/LoadingSpinner';
+import "./index.css";
 
-// 🔐 Protected Route
+
+/* =========================================
+   PROTECTED ROUTE
+========================================= */
 const ProtectedRoute = ({ children, adminOnly = false }) => {
   const { user, loading } = useAuth();
 
   if (loading) return <LoadingSpinner fullScreen />;
+
   if (!user) return <Navigate to="/login" replace />;
+
   if (adminOnly && user.role !== 'admin') {
     return <Navigate to="/dashboard" replace />;
   }
@@ -40,19 +47,23 @@ const ProtectedRoute = ({ children, adminOnly = false }) => {
   return children;
 };
 
+
+/* =========================================
+   ROUTES
+========================================= */
 const AppRoutes = () => {
   const { user } = useAuth();
 
   return (
     <Routes>
 
-      {/* Login */}
+      {/* LOGIN */}
       <Route
         path="/login"
         element={user ? <Navigate to="/dashboard" /> : <LoginPage />}
       />
 
-      {/* Protected Layout */}
+      {/* MAIN PROTECTED */}
       <Route
         path="/"
         element={
@@ -63,24 +74,39 @@ const AppRoutes = () => {
           </ProtectedRoute>
         }
       >
-        {/* Default */}
+
+        {/* DEFAULT */}
         <Route index element={<Navigate to="/dashboard" replace />} />
 
-        {/* Dashboard */}
+        {/* DASHBOARD */}
         <Route path="dashboard" element={<AdminDashboard />} />
 
-        {/* Admin only */}
+        {/* 🔥 LIVE MAP WITH TABS */}
         <Route
           path="live-map"
           element={
             <ProtectedRoute adminOnly>
-              <LiveMapPage />
+              <LiveMapLayout />
             </ProtectedRoute>
           }
-        />
+        >
+          {/* DEFAULT TAB */}
+          <Route index element={<Navigate to="live" replace />} />
 
+          {/* TABS */}
+          <Route path="live" element={<LiveMapPage />} />
+          <Route path="timeline" element={<TimelinePage />} />
+          <Route path="dashboard" element={<TrackingDashboard />} />
+
+          {/* OPTIONAL */}
+          <Route path="tasks" element={<div className="p-4">Tasks Coming Soon</div>} />
+          <Route path="settings" element={<div className="p-4">Settings Coming Soon</div>} />
+        </Route>
+
+        {/* ATTENDANCE */}
         <Route path="attendance" element={<AttendancePage />} />
 
+        {/* EMPLOYEES */}
         <Route
           path="employees"
           element={
@@ -90,6 +116,7 @@ const AppRoutes = () => {
           }
         />
 
+        {/* EMPLOYEE HISTORY */}
         <Route
           path="employees/:id/history"
           element={
@@ -99,6 +126,7 @@ const AppRoutes = () => {
           }
         />
 
+        {/* GEOFENCES */}
         <Route
           path="geofences"
           element={
@@ -108,6 +136,7 @@ const AppRoutes = () => {
           }
         />
 
+        {/* ALERTS */}
         <Route
           path="alerts"
           element={
@@ -117,28 +146,38 @@ const AppRoutes = () => {
           }
         />
 
-        {/* 🔥 Upload Excel */}
-        <Route path="upload-excel" element={<UploadExcelPage />} />
+        {/* UPLOAD */}
+        <Route
+          path="upload-excel"
+          element={
+            <ProtectedRoute adminOnly>
+              <UploadExcelPage />
+            </ProtectedRoute>
+          }
+        />
 
-        {/* 🔥 View Uploaded Data (NEW) */}
+        {/* VIEW UPLOADS */}
         <Route path="uploads" element={<ViewUploadsPage />} />
 
       </Route>
 
-      {/* Fallback */}
+      {/* FALLBACK */}
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
 
     </Routes>
   );
 };
 
-// Root App
+
+/* =========================================
+   ROOT
+========================================= */
 export default function App() {
   return (
-    <BrowserRouter>
-      <AuthProvider>
+    <AuthProvider>
+      <BrowserRouter>
         <AppRoutes />
-      </AuthProvider>
-    </BrowserRouter>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }

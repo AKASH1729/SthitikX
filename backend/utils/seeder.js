@@ -12,7 +12,7 @@ const Attendance = require('../models/Attendance');
 const LocationLog = require('../models/LocationLog');
 const Alert = require('../models/Alert');
 
-const connectDB = async () => {
+const connectDB = async () => { 
   await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/geotrack');
   console.log('✅ Connected to MongoDB');
 };

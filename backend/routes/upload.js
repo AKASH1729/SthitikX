@@ -2,7 +2,6 @@ const express = require("express");
 const multer = require("multer");
 const xlsx = require("xlsx");
 const fs = require("fs");
-const path = require("path");
 
 const EmployeeData = require("../models/EmployeeData");
 const User = require("../models/User");
@@ -13,7 +12,7 @@ const router = express.Router();
 
 // ==============================
 // ✅ MULTER CONFIG
-// ============================== 
+// ==============================
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, "uploads/");
@@ -28,7 +27,32 @@ const upload = multer({ storage });
 
 
 // ==============================
-// ✅ UPLOAD EXCEL (FINAL FIXED)
+// ✅ GET EMPLOYEES (FIXED)
+// ==============================
+router.get("/users", protect, async (req, res) => {
+  try {
+    console.log("👉 Fetching employees...");
+
+    const users = await User.find({ role: "employee" })
+      .select("_id name employeeId email");
+
+    console.log("✅ Employees found:", users.length);
+
+    res.status(200).json({
+      success: true,
+      users: users,
+    });
+  } catch (err) {
+    console.error("❌ FETCH USERS ERROR:", err);
+    res.status(500).json({
+      message: "Server error",
+    });
+  }
+});
+
+
+// ==============================
+// ✅ UPLOAD EXCEL (FINAL)
 // ==============================
 router.post(
   "/upload-excel",
@@ -45,24 +69,19 @@ router.post(
 
       const loggedInUser = req.user;
 
-      // ==============================
-      // 🔥 DEBUG LOGS (VERY IMPORTANT)
-      // ==============================
       console.log("RAW BODY:", req.body);
       console.log("Logged in:", loggedInUser.name);
       console.log("Role:", loggedInUser.role);
 
       // ==============================
-      // ✅ FIXED USER ID HANDLING
+      // ✅ USER ID FIX
       // ==============================
       let userId;
 
       if (loggedInUser.role === "admin") {
-        // 🔥 Force clean string
         userId = String(req.body.userId || "").trim();
 
         if (!userId || userId === "undefined" || userId === "null") {
-          console.log("❌ Invalid userId:", req.body.userId);
           return res.status(400).json({
             message: "Please select a valid employee",
           });
@@ -85,7 +104,7 @@ router.post(
       }
 
       // ==============================
-      // ✅ CHECK USER EXISTS
+      // ✅ USER EXISTS CHECK
       // ==============================
       const userExists = await User.findById(userId);
 
@@ -109,22 +128,22 @@ router.post(
       }
 
       // ==============================
-      // ✅ SAVE TO DB (FINAL STRUCTURE)
+      // ✅ SAVE DATA
       // ==============================
       const saved = await EmployeeData.create({
         employeeId: userExists.employeeId,
         category,
-        user: userId,                         // 👈 DATA OWNER
-        uploadedBy: loggedInUser._id.toString(), // 👈 UPLOADER
+        user: userId,
+        uploadedBy: loggedInUser._id.toString(),
         data: rows,
         fileName: req.file.filename,
         filePath: "uploads",
         uploadedAt: new Date(),
       });
 
-      console.log("✅ SAVED RECORD:", saved._id);
+      console.log("✅ SAVED:", saved._id);
 
-      return res.status(200).json({
+      res.status(200).json({
         message: "Upload successful",
         count: rows.length,
         id: saved._id,
@@ -133,12 +152,11 @@ router.post(
     } catch (err) {
       console.error("❌ UPLOAD ERROR:", err);
 
-      // cleanup
       if (req.file && req.file.path) {
         fs.unlink(req.file.path, () => {});
       }
 
-      return res.status(500).json({
+      res.status(500).json({
         message: "Server error",
         error: err.message,
       });

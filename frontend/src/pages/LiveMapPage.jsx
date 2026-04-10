@@ -1,118 +1,119 @@
-import React, { useEffect, useState } from 'react';
-import api from '../services/api';
-import { useSocket } from '../context/SocketContext';
-import LoadingSpinner from '../components/Shared/LoadingSpinner';
+import React, { useEffect, useState, useRef } from "react";
+import api from "../services/api";
+import { useSocket } from "../context/SocketContext";
+import LoadingSpinner from "../components/Shared/LoadingSpinner";
 
 import {
   MapContainer,
   TileLayer,
   Marker,
   Popup,
-  Circle
-} from 'react-leaflet';
+  Polyline,
+} from "react-leaflet";
 
-import MarkerClusterGroup from 'react-leaflet-cluster';
-import 'leaflet/dist/leaflet.css';
-import L from 'leaflet';
+import "leaflet/dist/leaflet.css";
+import L from "leaflet";
 
-// Fix marker icon issue (VERY IMPORTANT)
-delete L.Icon.Default.prototype._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: require('leaflet/dist/images/marker-icon-2x.png'),
-  iconUrl: require('leaflet/dist/images/marker-icon.png'),
-  shadowUrl: require('leaflet/dist/images/marker-shadow.png'),
+// 🔥 Marker icon (better UI)
+const markerIcon = new L.Icon({
+  iconUrl: "https://cdn-icons-png.flaticon.com/512/684/684908.png",
+  iconSize: [35, 35],
+  iconAnchor: [17, 35],
 });
 
+const safe = (v) => (v == null ? "N/A" : Number(v).toFixed(5));
+
 export default function LiveMapPage() {
-  const { on, off } = useSocket();
+  const { socket, on, off } = useSocket();
+  const mapRef = useRef();
 
   const [employees, setEmployees] = useState([]);
-  const [geofences, setGeofences] = useState([]);
+  const [paths, setPaths] = useState({});
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // ── Fetch initial data ──
+  /* ================= FETCH INITIAL ================= */
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [empRes, geoRes] = await Promise.all([
-          api.get('/locations/live'),
-          api.get('/geofences'),
-        ]);
-
-        setEmployees(empRes.data.employees);
-        setGeofences(geoRes.data.geofences);
+        const res = await api.get("/locations/live");
+        setEmployees(res.data.employees || []);
       } catch (err) {
-        console.error('Error fetching data', err);
+        console.error(err);
       } finally {
         setLoading(false);
       }
     };
-
     fetchData();
   }, []);
 
-  // ── Socket updates ──
+  /* ================= SOCKET ================= */
   useEffect(() => {
-    const handleLocationUpdate = (data) => {
-      setEmployees(prev =>
-        prev.map(emp =>
+    if (!socket) return;
+
+    const handleUpdate = (data) => {
+      // update employee
+      setEmployees((prev) =>
+        prev.map((emp) =>
           emp._id === data.employeeId
             ? {
                 ...emp,
-                lastLocation: {
-                  lat: data.lat,
-                  lng: data.lng,
-                  timestamp: data.timestamp
-                },
-                isTracking: true
+                lastLocation: { lat: data.lat, lng: data.lng },
+                battery: data.battery ?? emp.battery,
+                isTracking: true,
               }
             : emp
         )
       );
+
+      // update path
+      setPaths((prev) => {
+        const old = prev[data.employeeId] || [];
+        return {
+          ...prev,
+          [data.employeeId]: [...old, [data.lat, data.lng]].slice(-100),
+        };
+      });
+
+      // follow selected employee
+      if (mapRef.current && data.employeeId === selected?._id) {
+        mapRef.current.flyTo([data.lat, data.lng], 17, { duration: 1.5 });
+      }
     };
 
-    const handleOffline = (data) => {
-      setEmployees(prev =>
-        prev.map(emp =>
-          emp._id === data.employeeId
-            ? { ...emp, isTracking: false }
-            : emp
-        )
-      );
-    };
+    on("location:update", handleUpdate);
+    return () => off("location:update", handleUpdate);
+  }, [socket, selected]);
 
-    on('location:update', handleLocationUpdate);
-    on('system:employee-offline', handleOffline);
+  const getCoords = (emp) => ({
+    lat: emp?.lastLocation?.lat,
+    lng: emp?.lastLocation?.lng,
+  });
 
-    return () => {
-      off('location:update', handleLocationUpdate);
-      off('system:employee-offline', handleOffline);
-    };
-  }, [on, off]);
-
-  if (loading) return <LoadingSpinner fullScreen text="Loading map..." />;
-
-  const activeCount = employees.filter(e => e.isTracking).length;
+  if (loading) return <LoadingSpinner fullScreen text="Loading..." />;
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-screen bg-gray-100">
 
-      {/* ── Sidebar ── */}
+      {/* ================= SIDEBAR ================= */}
       <div className="w-72 bg-white border-r overflow-y-auto">
-        <div className="p-4 border-b">
-          <h2 className="font-semibold">Live Tracking</h2>
-          <p className="text-sm text-gray-500">
-            {activeCount} active · {employees.length} total
-          </p>
+        <div className="p-4 border-b font-semibold text-lg">
+          Live Employees
         </div>
 
-        {employees.map(emp => (
+        {employees.map((emp) => (
           <div
             key={emp._id}
-            onClick={() => setSelected(emp)}
-            className={`p-3 cursor-pointer hover:bg-gray-50 ${
-              selected?._id === emp._id ? 'bg-blue-50' : ''
+            onClick={() => {
+              setSelected(emp);
+              const { lat, lng } = getCoords(emp);
+
+              if (lat && lng && mapRef.current) {
+                mapRef.current.flyTo([lat, lng], 17);
+              }
+            }}
+            className={`p-3 cursor-pointer border-b hover:bg-gray-100 ${
+              selected?._id === emp._id ? "bg-blue-100" : ""
             }`}
           >
             <p className="font-medium">{emp.name}</p>
@@ -121,86 +122,77 @@ export default function LiveMapPage() {
         ))}
       </div>
 
-      {/* ── Map ── */}
-      <div className="flex-1">
+      {/* ================= MAP ================= */}
+      <div className="flex-1 relative">
+
         <MapContainer
-          center={[28.6139, 77.2090]}
-          zoom={12}
-          style={{ height: "100%", width: "100%" }}
+          center={[20.5937, 78.9629]}
+          zoom={5}
+          style={{ height: "100%" }}
+          whenCreated={(map) => (mapRef.current = map)}
         >
-          <TileLayer
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
+          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
 
-          {/* 🔥 CLUSTERING */}
-          <MarkerClusterGroup>
-
-            {/* Employees */}
-            {employees.map(emp => {
-              if (!emp.lastLocation?.lat) return null;
+          {/* MARKERS */}
+          {employees
+            .filter((emp) => !selected || emp._id === selected._id)
+            .map((emp) => {
+              const { lat, lng } = getCoords(emp);
+              if (!lat || !lng) return null;
 
               return (
                 <Marker
                   key={emp._id}
-                  position={[
-                    emp.lastLocation.lat,
-                    emp.lastLocation.lng
-                  ]}
-                  eventHandlers={{
-                    click: () => setSelected(emp)
-                  }}
+                  position={[lat, lng]}
+                  icon={markerIcon}
                 >
                   <Popup>
-                    <b>{emp.name}</b><br />
-                    {emp.employeeId}<br />
-                    Status: {emp.isTracking ? "Live" : "Offline"}
+                    <b>{emp.name}</b>
+                    <br />
+                    📍 {safe(lat)}, {safe(lng)}
+                    <br />
+                    🔋 {emp.battery ?? "N/A"}%
                   </Popup>
                 </Marker>
               );
             })}
 
-          </MarkerClusterGroup>
-
-          {/* Geofences */}
-          {geofences.map(geo => (
-            <Circle
-              key={geo._id}
-              center={[geo.center.lat, geo.center.lng]}
-              radius={geo.radius}
-              pathOptions={{
-                color: geo.color || "blue",
-                fillOpacity: 0.1
-              }}
+          {/* PATH */}
+          {selected && paths[selected._id] && (
+            <Polyline
+              positions={paths[selected._id]}
+              pathOptions={{ color: "blue", weight: 4 }}
             />
-          ))}
-        </MapContainer>
-      </div>
-
-      {/* ── Selected Employee Card ── */}
-      {selected && (
-        <div className="absolute bottom-4 left-80 bg-white p-4 rounded shadow w-64">
-          <h3 className="font-semibold">{selected.name}</h3>
-          <p className="text-sm text-gray-500">{selected.employeeId}</p>
-
-          <p className="text-sm mt-2">
-            Status: {selected.isTracking ? "Live" : "Offline"}
-          </p>
-
-          {selected.lastLocation && (
-            <p className="text-xs mt-1">
-              {selected.lastLocation.lat.toFixed(4)},{" "}
-              {selected.lastLocation.lng.toFixed(4)}
-            </p>
           )}
+        </MapContainer>
 
-          <button
-            onClick={() => setSelected(null)}
-            className="text-xs text-red-500 mt-2"
-          >
-            Close
-          </button>
-        </div>
-      )}
+        {/* ================= BOTTOM CARD ================= */}
+        {selected && (() => {
+          const { lat, lng } = getCoords(selected);
+
+          return (
+            <div className="absolute bottom-4 left-4 bg-white shadow-xl rounded-xl p-4 w-72 border">
+              <h3 className="font-bold text-lg">{selected.name}</h3>
+              <p className="text-sm text-gray-500">{selected.employeeId}</p>
+
+              <div className="mt-2 text-sm space-y-1">
+                <p>📍 {safe(lat)}, {safe(lng)}</p>
+                <p>🔋 Battery: {selected.battery ?? "N/A"}%</p>
+                <p
+                  className={
+                    selected.isTracking
+                      ? "text-green-600"
+                      : "text-red-600"
+                  }
+                >
+                  {selected.isTracking ? "🟢 Live" : "🔴 Offline"}
+                </p>
+              </div>
+            </div>
+          );
+        })()}
+
+      </div>
     </div>
   );
 }

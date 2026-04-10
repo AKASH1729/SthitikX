@@ -12,47 +12,38 @@ export default function UploadExcelPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
 
-  // ==============================
-  // ✅ FETCH EMPLOYEES (ADMIN)
-  // ==============================
+  // ================= FETCH EMPLOYEES =================
   useEffect(() => {
     if (user?.role === "admin") {
-      const fetchEmployees = async () => {
-        try {
-          const res = await api.get("/users");
-
-          let employeeList = [];
-
-          if (Array.isArray(res.data)) {
-            employeeList = res.data;
-          } else if (Array.isArray(res.data.data)) {
-            employeeList = res.data.data;
-          } else if (Array.isArray(res.data.users)) {
-            employeeList = res.data.users;
-          }
-
-          setUsers(employeeList);
-        } catch (err) {
-          console.error("Fetch employees error:", err);
-          setUsers([]);
-        }
-      };
-
       fetchEmployees();
     }
   }, [user]);
 
-  // ==============================
-  // ✅ UPLOAD FUNCTION
-  // ==============================
-  const handleUpload = async () => {
-    // 🔥 FIX: Strict validation
-    if (!file) return setMessage("❌ Please select a file");
-    if (!category) return setMessage("❌ Please select category");
+  const fetchEmployees = async () => {
+    try {
+      const res = await api.get("/users");
 
-    if (user?.role === "admin" && !selectedUser) {
-      return setMessage("❌ Please select an employee");
+      console.log("EMPLOYEE API:", res.data);
+
+      const employeeList =
+        res.data?.users ||
+        res.data?.data ||
+        res.data ||
+        [];
+
+      setUsers(employeeList);
+    } catch (err) {
+      console.error("Fetch error:", err);
+      setUsers([]);
     }
+  };
+
+  // ================= UPLOAD =================
+  const handleUpload = async () => {
+    if (!file) return setMessage("❌ Select file");
+    if (!category) return setMessage("❌ Select category");
+    if (user?.role === "admin" && !selectedUser)
+      return setMessage("❌ Select employee");
 
     const userId =
       user?.role === "admin" ? selectedUser : user?._id;
@@ -64,24 +55,18 @@ export default function UploadExcelPage() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("category", category);
-      formData.append("userId", userId); // 🔥 ALWAYS SENT
+      formData.append("userId", userId);
 
       const res = await api.post("/upload-excel", formData);
 
-      setMessage(
-        `✅ Upload successful (${res.data.count || 0} records)`
-      );
+      setMessage(`✅ Uploaded (${res.data.count || 0})`);
 
-      // ✅ Reset form
       setFile(null);
       setCategory("");
       setSelectedUser("");
-
     } catch (err) {
-      console.error(err.response?.data || err);
-      setMessage(
-        err.response?.data?.message || "❌ Upload failed"
-      );
+      console.error(err);
+      setMessage(err.response?.data?.message || "❌ Upload failed");
     } finally {
       setLoading(false);
     }
@@ -93,55 +78,57 @@ export default function UploadExcelPage() {
         Upload Employee Data
       </h1>
 
-      {/* ================= EMPLOYEE ================= */}
+      {/* EMPLOYEE */}
       <div className="mb-4">
         <label className="block font-semibold mb-2">
           Employee
         </label>
 
         {user?.role === "admin" ? (
-          <select
-            value={selectedUser}
-            onChange={(e) => setSelectedUser(e.target.value)}
-            className="p-2 border rounded w-full"
-          >
-            <option value="">Select Employee</option>
+          <>
+            <select
+              value={selectedUser}
+              onChange={(e) => setSelectedUser(e.target.value)}
+              className="p-2 border rounded w-full"
+            >
+              <option value="">Select Employee</option>
 
-            {users.map((u) => (
-              <option key={u._id} value={u._id}>
-                {u.name} ({u.employeeId})
-              </option>
-            ))}
-          </select>
+              {users.map((u) => (
+                <option key={u._id} value={u._id}>
+                  {u.name} ({u.employeeId})
+                </option>
+              ))}
+            </select>
+
+            {users.length === 0 && (
+              <p className="text-red-500 mt-2">
+                No employees found ⚠️
+              </p>
+            )}
+          </>
         ) : (
-          <div className="p-2 border rounded bg-gray-100">
-            {user?.name} ({user?.email})
+          <div className="p-2 border bg-gray-100">
+            {user?.name}
           </div>
         )}
       </div>
 
-      {/* ================= FILE ================= */}
+      {/* FILE */}
       <div className="mb-4">
-        <label className="block font-semibold mb-2">
-          Excel File
-        </label>
         <input
           type="file"
-          accept=".xlsx, .xls"
+          accept=".xlsx,.xls"
           onChange={(e) => setFile(e.target.files[0])}
-          className="border p-2 w-full rounded"
+          className="border p-2 w-full"
         />
       </div>
 
-      {/* ================= CATEGORY ================= */}
+      {/* CATEGORY */}
       <div className="mb-4">
-        <label className="block font-semibold mb-2">
-          Category
-        </label>
         <select
           value={category}
           onChange={(e) => setCategory(e.target.value)}
-          className="p-2 border rounded w-full"
+          className="p-2 border w-full"
         >
           <option value="">Select Category</option>
           <option value="flow">Flow</option>
@@ -149,21 +136,17 @@ export default function UploadExcelPage() {
         </select>
       </div>
 
-      {/* ================= BUTTON ================= */}
+      {/* BUTTON */}
       <button
         onClick={handleUpload}
         disabled={loading}
-        className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded"
+        className="bg-blue-500 text-white px-4 py-2 rounded"
       >
-        {loading ? "Uploading..." : "Upload Excel"}
+        {loading ? "Uploading..." : "Upload"}
       </button>
 
-      {/* ================= MESSAGE ================= */}
-      {message && (
-        <p className="mt-4 text-sm font-medium">
-          {message}
-        </p>
-      )}
+      {/* MESSAGE */}
+      {message && <p className="mt-3">{message}</p>}
     </div>
   );
 }

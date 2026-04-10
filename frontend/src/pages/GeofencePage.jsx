@@ -30,9 +30,11 @@ function GeofenceModal({ geofence, onClose, onSave }) {
 
     try {
       if (isEdit) {
-        await api.put(`/geofence/update/${geofence._id}`, form);
+        // ✅ FIXED
+        await api.put(`/geofences/update/${geofence._id}`, form);
       } else {
-        await api.post('/geofence/create', form);
+        // ✅ FIXED
+        await api.post('/geofences/create', form);
       }
 
       onSave();
@@ -121,7 +123,8 @@ export default function GeofencePage() {
   const fetchGeofences = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await api.get('/geofence/all');
+      // ✅ FIXED
+      const { data } = await api.get('/geofences/all');
       setGeofences(data.geofences || []);
     } catch (err) {
       console.error(err);
@@ -138,7 +141,8 @@ export default function GeofencePage() {
     if (!window.confirm(`Delete "${name}"?`)) return;
 
     try {
-      await api.delete(`/geofence/delete/${id}`);
+      // ✅ FIXED
+      await api.delete(`/geofences/delete/${id}`);
       fetchGeofences();
     } catch (err) {
       alert("Delete failed");
