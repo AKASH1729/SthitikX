@@ -1,23 +1,7 @@
-version: '3.8'
-
 services:
-  # MongoDB
-  # mongodb:
-  #   image: mongo:6
-  #   container_name: geotrack-mongo
-  #   restart: unless-stopped
-  #   ports:
-  #     - "27017:27017"
-  #   volumes:
-  #     - mongo_data:/data/db
-  #   environment:
-  #     MONGO_INITDB_ROOT_USERNAME: admin
-  #     MONGO_INITDB_ROOT_PASSWORD: strongpassword
-  #     MONGO_INITDB_DATABASE: geotrack
-
-  # Backend API
   backend:
-    build: ./backend
+    build:
+      context: ./backend
     container_name: geotrack-api
     restart: unless-stopped
     ports:
@@ -26,18 +10,25 @@ services:
       - ./backend/.env
     volumes:
       - ./backend/logs:/app/logs
+      - ./backend/uploads:/app/uploads
+    networks:
+      - geotrack-network
 
-  # Admin Frontend
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
     container_name: geotrack-frontend
     restart: unless-stopped
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     ports:
       - "80:80"
+      - "443:443"
     env_file:
       - ./frontend/.env
-  # Mobile PWA
- 
+    networks:
+      - geotrack-network
 
-volumes:
-  mongo_data:
+networks:
+  geotrack-network:
+    driver: bridge

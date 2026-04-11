@@ -3,7 +3,7 @@ FROM node:18-alpine AS builder
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 
 COPY . .
 
@@ -19,6 +19,6 @@ RUN chown -R appuser:appgroup /app
 USER appuser
 
 ENV NODE_ENV=production
-EXPOSE 4000
+EXPOSE 5000
 
 CMD ["npm", "start"]

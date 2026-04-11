@@ -18,15 +18,16 @@ const { initializeSocket } = require('./sockets/socketManager');
 
 // Routes
 const authRoutes = require('./routes/auth');
-const userRoutes = require('./routes/userRoutes');   // ✅ correct file
+const userRoutes = require('./routes/userRoutes');
 const attendanceRoutes = require('./routes/attendance');
 const locationRoutes = require('./routes/locations');
 const geofenceRoutes = require('./routes/geofences');
-const dashboardRoutes = require('./routes/dashboard'); // ✅ uses your controller
+const dashboardRoutes = require('./routes/dashboard');
 const uploadRoutes = require('./routes/upload');
 const getEmployeeData = require('./routes/getEmployeeData');
 const timelineRoutes = require('./routes/timelineRoutes');
 const { getDashboard } = require('./controllers/livedashboardController');
+
 // ─────────────────────────────────────────
 // App Init
 // ─────────────────────────────────────────
@@ -34,31 +35,21 @@ const app = express();
 const server = http.createServer(app);
 
 // ─────────────────────────────────────────
-// CORS (WEB + MOBILE)
+// CORS (ALLOW ALL USERS)
 // ─────────────────────────────────────────
-const allowedOrigins = [
-  process.env.CLIENT_URL,
-  process.env.MOBILE_URL,
-];
-
 app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("CORS blocked"));
-    }
-  },
+  origin: "*",
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   credentials: true,
 }));
 
 // ─────────────────────────────────────────
-// Socket.IO
+// Socket.IO (ALLOW ALL)
 // ─────────────────────────────────────────
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
-    methods: ['GET', 'POST'],
+    origin: "*",
+    methods: ["GET", "POST"],
     credentials: true,
   },
 });
@@ -104,16 +95,18 @@ app.use((req, res, next) => {
 // ROUTES
 // ─────────────────────────────────────────
 app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);              // ✅ /api/users/employees
+app.use('/api/users', userRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/locations', locationRoutes);
 app.use('/api/geofences', geofenceRoutes);
-app.use('/api/dashboard', dashboardRoutes);    // ✅ uses your controller
+app.use('/api/dashboard', dashboardRoutes);
 app.use('/api', uploadRoutes);
 app.use('/api/employee-data', getEmployeeData);
 app.use('/api/timeline', timelineRoutes);
+
 console.log("dashboardRoutes:", typeof dashboardRoutes);
-app.use('/api/dashboards', getDashboard); // ✅ directly uses your controller
+app.use('/api/dashboards', getDashboard);
+
 // ─────────────────────────────────────────
 // Health Check
 // ─────────────────────────────────────────
