@@ -1,50 +1,83 @@
 /**
- * Dashboard Controller
- * Admin analytics and summary data
+ * Dashboard Controller (MULTI-TENANT SAFE 🔥)
  */
 
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const Alert = require('../models/Alert');
-const LocationLog = require('../models/LocationLog');
 
 /**
  * @route   GET /api/dashboard/stats
- * @access  Private (Admin)
  */
 const getDashboardStats = async (req, res) => {
   try {
     const today = new Date().toISOString().split('T')[0];
 
+    const companyFilter = { companyId: req.user.companyId };
+
     const [
       totalEmployees,
       activeNow,
       todayPresent,
-      todayAbsent,
+      totalEmployeesCount,
       recentAlerts,
       weeklyAttendance,
     ] = await Promise.all([
-      User.countDocuments({ role: 'employee', isActive: true }),
-      User.countDocuments({ role: 'employee', isTracking: true }),
-      Attendance.countDocuments({ date: today }),
-      User.countDocuments({ role: 'employee', isActive: true }).then(total =>
-        Attendance.countDocuments({ date: today }).then(present => total - present)
-      ),
-      Alert.find({ isRead: false }).sort({ timestamp: -1 }).limit(10)
+
+      /* 🔥 ONLY COMPANY USERS */
+      User.countDocuments({
+        role: 'employee',
+        isActive: true,
+        ...companyFilter,
+      }),
+
+      User.countDocuments({
+        role: 'employee',
+        isTracking: true,
+        ...companyFilter,
+      }),
+
+      Attendance.countDocuments({
+        date: today,
+        ...companyFilter,
+      }),
+
+      User.countDocuments({
+        role: 'employee',
+        isActive: true,
+        ...companyFilter,
+      }),
+
+      Alert.find({
+        isRead: false,
+        ...companyFilter,
+      })
+        .sort({ timestamp: -1 })
+        .limit(10)
         .populate('employee', 'name employeeId avatar'),
-      // Last 7 days attendance count
+
+      /* 🔥 WEEKLY ATTENDANCE */
       (async () => {
         const results = [];
+
         for (let i = 6; i >= 0; i--) {
           const d = new Date();
           d.setDate(d.getDate() - i);
           const dateStr = d.toISOString().split('T')[0];
-          const count = await Attendance.countDocuments({ date: dateStr });
+
+          const count = await Attendance.countDocuments({
+            date: dateStr,
+            ...companyFilter,
+          });
+
           results.push({ date: dateStr, count });
         }
+
         return results;
       })(),
     ]);
+
+    const todayAbsent = totalEmployeesCount - todayPresent;
 
     res.json({
       success: true,
@@ -58,6 +91,7 @@ const getDashboardStats = async (req, res) => {
         weeklyAttendance,
       },
     });
+
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -65,14 +99,18 @@ const getDashboardStats = async (req, res) => {
 
 /**
  * @route   GET /api/dashboard/alerts
- * @access  Private (Admin)
  */
 const getAlerts = async (req, res) => {
   const { isRead, page = 1, limit = 20 } = req.query;
-  const query = {};
+
+  const query = {
+    companyId: req.user.companyId, // 🔥 FIX
+  };
+
   if (isRead !== undefined) query.isRead = isRead === 'true';
 
   const total = await Alert.countDocuments(query);
+
   const alerts = await Alert.find(query)
     .populate('employee', 'name employeeId avatar')
     .populate('geofence', 'name')
@@ -85,11 +123,29 @@ const getAlerts = async (req, res) => {
 
 /**
  * @route   PUT /api/dashboard/alerts/:id/read
- * @access  Private (Admin)
  */
 const markAlertRead = async (req, res) => {
-  await Alert.findByIdAndUpdate(req.params.id, { isRead: true });
+  const alert = await Alert.findOneAndUpdate(
+    {
+      _id: req.params.id,
+      companyId: req.user.companyId, // 🔥 SECURITY
+    },
+    { isRead: true },
+    { new: true }
+  );
+
+  if (!alert) {
+    return res.status(404).json({
+      success: false,
+      message: "Alert not found or unauthorized",
+    });
+  }
+
   res.json({ success: true });
 };
 
-module.exports = { getDashboardStats, getAlerts, markAlertRead };
+module.exports = {
+  getDashboardStats,
+  getAlerts,
+  markAlertRead,
+};

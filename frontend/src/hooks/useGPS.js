@@ -1,7 +1,5 @@
 /**
- * useGPS — Custom hook for continuous GPS tracking on mobile
- * Uses the Geolocation API with high accuracy mode
- * Automatically sends location updates via API and Socket.io
+ * useGPS — FINAL PRODUCTION VERSION 🔥
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -9,61 +7,106 @@ import api from '../services/api';
 import { useSocket } from '../context/SocketContext';
 
 const GPS_OPTIONS = {
-  enableHighAccuracy: true,   // Use GPS chip (vs WiFi triangulation)
-  timeout:            10000,  // 10 second timeout per reading
-  maximumAge:         5000,   // Accept 5s old cached position
+  enableHighAccuracy: true,
+  timeout: 10000,
+  maximumAge: 5000,
 };
 
-const UPDATE_INTERVAL_MS = 15000; // Send location every 15 seconds
+const UPDATE_INTERVAL_MS = 15000;
+const MIN_DISTANCE_METERS = 10; // 🔥 avoid spam
 
 export const useGPS = ({ attendanceId, isTracking }) => {
   const { emit } = useSocket();
 
-  const [position,   setPosition]   = useState(null);
-  const [error,      setError]      = useState(null);
-  const [accuracy,   setAccuracy]   = useState(null);
+  const [position, setPosition] = useState(null);
+  const [error, setError] = useState(null);
+  const [accuracy, setAccuracy] = useState(null);
   const [isWatching, setIsWatching] = useState(false);
 
-  const watchIdRef      = useRef(null);
-  const lastUpdateRef   = useRef(0);
-  const lastPositionRef = useRef(null);
+  const watchIdRef = useRef(null);
+  const lastUpdateRef = useRef(0);
+  const lastCoordsRef = useRef(null);
 
+  /* ================= DISTANCE ================= */
+  const getDistance = (a, b) => {
+    if (!a || !b) return Infinity;
+
+    const R = 6371e3;
+    const dLat = (b.latitude - a.latitude) * Math.PI / 180;
+    const dLng = (b.longitude - a.longitude) * Math.PI / 180;
+
+    const x =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(a.latitude * Math.PI / 180) *
+      Math.cos(b.latitude * Math.PI / 180) *
+      Math.sin(dLng / 2) ** 2;
+
+    return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+  };
+
+  /* ================= SEND LOCATION ================= */
   const sendLocationUpdate = useCallback(async (coords) => {
     if (!isTracking || !attendanceId) return;
 
     const now = Date.now();
+
+    // 🔥 throttle
     if (now - lastUpdateRef.current < UPDATE_INTERVAL_MS) return;
+
+    // 🔥 movement filter
+    const distance = getDistance(lastCoordsRef.current, coords);
+    if (distance < MIN_DISTANCE_METERS) return;
+
     lastUpdateRef.current = now;
+    lastCoordsRef.current = coords;
 
     const payload = {
-      lat:          coords.latitude,
-      lng:          coords.longitude,
-      accuracy:     coords.accuracy,
-      speed:        coords.speed,
-      heading:      coords.heading,
+      lat: coords.latitude,
+      lng: coords.longitude,
+      accuracy: coords.accuracy,
+      speed: coords.speed,
+      heading: coords.heading,
       attendanceId,
     };
 
     try {
-      // Send via REST API for reliable persistence
       await api.post('/locations/update', payload);
 
-      // Also broadcast via WebSocket for instant map update
-      emit('location:ping', {
-        lat:      coords.latitude,
-        lng:      coords.longitude,
-        accuracy: coords.accuracy,
-        speed:    coords.speed,
-      });
+      emit('location:ping', payload);
+
     } catch (err) {
-      console.error('Location update failed:', err.message);
-      // TODO: Queue for background sync when offline
+      console.log('📡 Offline — saving locally');
+
+      // 🔥 STORE FAILED REQUEST
+      const queue = JSON.parse(localStorage.getItem('gpsQueue') || '[]');
+      queue.push(payload);
+      localStorage.setItem('gpsQueue', JSON.stringify(queue));
     }
   }, [isTracking, attendanceId, emit]);
 
+  /* ================= RETRY FAILED ================= */
+  const retryQueuedLocations = async () => {
+    const queue = JSON.parse(localStorage.getItem('gpsQueue') || '[]');
+
+    if (!queue.length) return;
+
+    console.log(`🔄 Retrying ${queue.length} locations`);
+
+    for (const loc of queue) {
+      try {
+        await api.post('/locations/update', loc);
+      } catch {
+        return; // stop retry if still failing
+      }
+    }
+
+    localStorage.removeItem('gpsQueue');
+  };
+
+  /* ================= START ================= */
   const startTracking = useCallback(() => {
     if (!navigator.geolocation) {
-      setError('Geolocation not supported on this device');
+      setError('Geolocation not supported');
       return;
     }
 
@@ -72,21 +115,20 @@ export const useGPS = ({ attendanceId, isTracking }) => {
 
     watchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
-        const { latitude: lat, longitude: lng, accuracy, speed, heading } = pos.coords;
+        const { latitude: lat, longitude: lng, accuracy } = pos.coords;
 
         setPosition({ lat, lng });
         setAccuracy(Math.round(accuracy));
-        lastPositionRef.current = pos.coords;
 
-        // Send update (throttled internally)
         sendLocationUpdate(pos.coords);
       },
       (err) => {
         const messages = {
-          1: 'Location access denied. Please enable GPS in settings.',
-          2: 'Location unavailable. Check GPS signal.',
-          3: 'Location request timed out.',
+          1: 'Permission denied',
+          2: 'Location unavailable',
+          3: 'Timeout',
         };
+
         setError(messages[err.code] || 'GPS error');
         setIsWatching(false);
       },
@@ -94,6 +136,7 @@ export const useGPS = ({ attendanceId, isTracking }) => {
     );
   }, [sendLocationUpdate]);
 
+  /* ================= STOP ================= */
   const stopTracking = useCallback(() => {
     if (watchIdRef.current !== null) {
       navigator.geolocation.clearWatch(watchIdRef.current);
@@ -102,7 +145,7 @@ export const useGPS = ({ attendanceId, isTracking }) => {
     setIsWatching(false);
   }, []);
 
-  // Auto-start tracking when isTracking changes
+  /* ================= AUTO START ================= */
   useEffect(() => {
     if (isTracking) startTracking();
     else stopTracking();
@@ -110,28 +153,37 @@ export const useGPS = ({ attendanceId, isTracking }) => {
     return () => stopTracking();
   }, [isTracking, startTracking, stopTracking]);
 
-  // Keep screen awake using WakeLock API while tracking
+  /* ================= ONLINE RETRY ================= */
+  useEffect(() => {
+    window.addEventListener('online', retryQueuedLocations);
+    return () => window.removeEventListener('online', retryQueuedLocations);
+  }, []);
+
+  /* ================= WAKE LOCK ================= */
   useEffect(() => {
     let wakeLock = null;
 
-    const requestWakeLock = async () => {
+    const enableWakeLock = async () => {
       if (!isTracking || !('wakeLock' in navigator)) return;
+
       try {
         wakeLock = await navigator.wakeLock.request('screen');
-        console.log('🔆 Screen wake lock acquired');
-      } catch (err) {
-        console.log('Wake lock failed:', err.message);
-      }
+      } catch {}
     };
 
-    if (isTracking) requestWakeLock();
+    enableWakeLock();
 
     return () => {
-      if (wakeLock) {
-        wakeLock.release().then(() => console.log('🔅 Wake lock released'));
-      }
+      wakeLock?.release();
     };
   }, [isTracking]);
 
-  return { position, error, accuracy, isWatching, startTracking, stopTracking };
+  return {
+    position,
+    error,
+    accuracy,
+    isWatching,
+    startTracking,
+    stopTracking,
+  };
 };

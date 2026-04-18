@@ -1,36 +1,79 @@
+/**
+ * Geofence Routes — FINAL SaaS VERSION 🔥
+ */
+
 const express = require('express');
+const { body, param } = require('express-validator');
+
+const router = express.Router();
+
 const {
   getGeofences,
   createGeofence,
   updateGeofence,
   deleteGeofence,
-  checkGeofence
 } = require('../controllers/geofenceController');
 
-const { protect, authorize } = require('../middleware/auth');
+const {
+  protect,
+  authorize,
+  companyFilter
+} = require('../middleware/auth');
 
-const router = express.Router();
+const { validate } = require('../middleware/validate');
 
-// 🔐 Protect all routes
-router.use(protect);
+/* =========================
+   🔐 GLOBAL MIDDLEWARE
+========================= */
 
-/* =========================================
-   📍 GEOFENCE ROUTES (UNIQUE PREFIX)
-========================================= */
+router.use(
+  protect,
+  authorize('admin'),   // ❌ block employee + super_admin
+  companyFilter         // 🔥 multi-tenant safety
+);
 
-// ✅ GET all geofences
+/* =========================
+   📥 GET ALL
+========================= */
 router.get('/all', getGeofences);
 
-// ✅ CREATE geofence (admin only)
-router.post('/create', authorize('admin'), createGeofence);
+/* =========================
+   ➕ CREATE 
+========================= */
+router.post(
+  '/create',
+  [
+    body('name').notEmpty().withMessage('Name required'),
+    body('center.lat').isNumeric().withMessage('Latitude required'),
+    body('center.lng').isNumeric().withMessage('Longitude required'),
+    body('radius').isNumeric().withMessage('Radius required'),
+  ],
+  validate,
+  createGeofence
+);
 
-// ✅ UPDATE geofence
-router.put('/update/:id', authorize('admin'), updateGeofence);
+/* =========================
+   ✏️ UPDATE
+========================= */
+router.put(
+  '/update/:id',
+  [
+    param('id').isMongoId().withMessage('Invalid ID'),
+  ],
+  validate,
+  updateGeofence
+);
 
-// ✅ DELETE (soft delete)
-router.delete('/delete/:id', authorize('admin'), deleteGeofence);
+/* =========================
+   ❌ DELETE
+========================= */
+router.delete(
+  '/delete/:id',
+  [
+    param('id').isMongoId().withMessage('Invalid ID'),
+  ],
+  validate,
+  deleteGeofence
+);
 
-// ✅ CHECK geofence (IMPORTANT for frontend)
-router.post('/check', checkGeofence);
-
-module.exports = router;  
+module.exports = router;

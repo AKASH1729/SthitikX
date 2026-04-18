@@ -1,135 +1,197 @@
 /**
- * Socket.io Manager
- * Handles real-time bidirectional communication for live tracking
+ * Socket.io Manager (PRODUCTION READY 🔥)
  */
 
-const jwt = require('jsonwebtoken');
-const User = require('../models/User');
-const logger = require('../config/logger');
+const jwt = require("jsonwebtoken");
+const User = require("../models/User");
+const logger = require("../config/logger");
 
-// Track connected sockets: Map<userId, socketId>
 const connectedUsers = new Map();
 
 const initializeSocket = (io) => {
 
-  // ─── Middleware: Authenticate socket connections ──────────────────────────
+  /* ================= GLOBAL SETTINGS ================= */
+  io.engine.pingTimeout = 60000;   // 60s
+  io.engine.pingInterval = 25000;  // 25s
+
+  /* ================= AUTH ================= */
   io.use(async (socket, next) => {
     try {
-      const token = socket.handshake.auth.token || socket.handshake.query.token;
-      if (!token) return next(new Error('Authentication required'));
+      const token =
+        socket.handshake.auth?.token ||
+        socket.handshake.query?.token;
+
+      if (!token) {
+        return next(new Error("AUTH_REQUIRED"));
+      }
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await User.findById(decoded.id).select('name email role isActive');
 
-      if (!user || !user.isActive) return next(new Error('User not found'));
+      // ✅ SUPER ADMIN SUPPORT
+      let query = {
+        _id: decoded.id,
+        isActive: true,
+      };
 
-      socket.user = user; // Attach user to socket
+      if (decoded.role !== "super_admin") {
+        query.companyId = decoded.companyId;
+      }
+
+      const user = await User.findOne(query).select(
+        "name email role companyId"
+      );
+
+      if (!user) {
+        return next(new Error("USER_INVALID"));
+      }
+
+      socket.user = user;
       next();
+
     } catch (error) {
-      next(new Error('Invalid token'));
+      logger.error("Socket Auth Error:", error.message);
+      return next(new Error("AUTH_FAILED"));
     }
   });
 
-  // ─── Connection Handler ───────────────────────────────────────────────────
-  io.on('connection', (socket) => {
+  /* ================= CONNECTION ================= */
+  io.on("connection", (socket) => {
     const user = socket.user;
-    logger.info(`🔌 Socket connected: ${user.name} [${user.role}] - ${socket.id}`);
+    const userId = user._id.toString();
+    const companyRoom = `company:${user.companyId || "global"}`;
 
-    // Store connection
-    connectedUsers.set(user._id.toString(), socket.id);
+    logger.info(`🔌 ${user.name} connected (${user.companyId || "global"})`);
 
-    // Admins join a special room to receive all employee events
-    if (user.role === 'admin') {
-      socket.join('admins');
-      logger.info(`👑 Admin ${user.name} joined admin room`);
+    /* ================= USER TRACK ================= */
+    if (!connectedUsers.has(userId)) {
+      connectedUsers.set(userId, new Set());
+    }
+    connectedUsers.get(userId).add(socket.id);
+
+    /* ================= ROOMS ================= */
+    socket.join(`employee:${userId}`);
+    socket.join(companyRoom);
+
+    if (user.role === "admin") {
+      socket.join(`admins:${user.companyId}`);
     }
 
-    // Employee joins their own personal room
-    socket.join(`employee:${user._id}`);
+    if (user.role === "super_admin") {
+      socket.join("super_admin");
+    }
 
-    // Broadcast updated online count to admins
-    io.to('admins').emit('system:employee-online', {
-      employeeId: user._id,
-      name: user.name,
-      role: user.role,
-      connectedAt: new Date(),
-    });
+    /* ================= ONLINE EVENT ================= */
+    if (user.role === "employee") {
+      io.to(`admins:${user.companyId}`).emit("system:employee-online", {
+        employeeId: userId,
+        name: user.name,
+        companyId: user.companyId,
+        connectedAt: new Date(),
+      });
+    }
 
-    // ─── Employee: Send location ping ───────────────────────────────────────
-    // This is a WebSocket alternative to the REST API for location updates
-    socket.on('location:ping', async (data) => {
+    /* ================= EVENTS ================= */
+
+    /* 📍 LOCATION */
+    socket.on("location:ping", async (data) => {
       try {
         const { lat, lng, accuracy, speed } = data;
 
-        // Broadcast to all admins
-        io.to('admins').emit('location:update', {
-          employeeId: user._id,
+        if (!lat || !lng) return;
+
+        io.to(`admins:${user.companyId}`).emit("location:update", {
+          employeeId: userId,
           name: user.name,
-          lat, lng, accuracy, speed,
+          lat,
+          lng,
+          accuracy,
+          speed,
           timestamp: new Date(),
         });
 
-        // Update last location in DB (non-blocking)
-        User.findByIdAndUpdate(user._id, {
-          lastLocation: { lat, lng, timestamp: new Date() },
-        }).catch(err => logger.error(`Failed to update location: ${err.message}`));
+        // 🔥 non-blocking update
+        User.updateOne(
+          { _id: userId },
+          {
+            $set: {
+              lastLocation: { lat, lng, timestamp: new Date() },
+              isTracking: true,
+            },
+          }
+        ).catch(() => {});
 
       } catch (error) {
-        socket.emit('error', { message: 'Location update failed' });
+        socket.emit("error", { message: "Location failed" });
       }
     });
 
-    // ─── Admin: Request live locations of all employees ─────────────────────
-    socket.on('admin:request-live-locations', async () => {
-      if (user.role !== 'admin') return;
+    /* 📊 ADMIN FETCH */
+    socket.on("admin:request-live-locations", async () => {
+      try {
+        if (user.role !== "admin") return;
 
-      const employees = await User.find({
-        role: 'employee',
-        isActive: true,
-        isTracking: true,
-      }).select('name email employeeId lastLocation isTracking');
+        const employees = await User.find({
+          role: "employee",
+          companyId: user.companyId,
+          isActive: true,
+          isTracking: true,
+        }).select("name employeeId lastLocation isTracking");
 
-      socket.emit('admin:live-locations', { employees });
-    });
+        socket.emit("admin:live-locations", { employees });
 
-    // ─── Admin: Send message/alert to specific employee ─────────────────────
-    socket.on('admin:send-alert', ({ employeeId, message }) => {
-      if (user.role !== 'admin') return;
-
-      const employeeSocketId = connectedUsers.get(employeeId);
-      if (employeeSocketId) {
-        io.to(`employee:${employeeId}`).emit('alert:received', {
-          message,
-          from: user.name,
-          timestamp: new Date(),
-        });
-        socket.emit('admin:alert-sent', { success: true, employeeId });
-      } else {
-        socket.emit('admin:alert-sent', { success: false, message: 'Employee not online' });
+      } catch (err) {
+        socket.emit("error", { message: "Fetch failed" });
       }
     });
 
-    // ─── Disconnect ─────────────────────────────────────────────────────────
-    socket.on('disconnect', async (reason) => {
-      logger.info(`🔌 Socket disconnected: ${user.name} - ${reason}`);
-      connectedUsers.delete(user._id.toString());
+    /* 🚨 ALERT */
+    socket.on("admin:send-alert", ({ employeeId, message }) => {
+      if (user.role !== "admin") return;
 
-      // Mark employee as not tracking on disconnect
-      if (user.role === 'employee') {
-        await User.findByIdAndUpdate(user._id, { isTracking: false }).catch(() => {});
-        io.to('admins').emit('system:employee-offline', {
-          employeeId: user._id,
-          name: user.name,
-          disconnectedAt: new Date(),
-        });
+      io.to(`employee:${employeeId}`).emit("alert:received", {
+        message,
+        from: user.name,
+        timestamp: new Date(),
+      });
+    });
+
+    /* ================= DISCONNECT ================= */
+    socket.on("disconnect", async () => {
+      const sockets = connectedUsers.get(userId);
+
+      if (!sockets) return;
+
+      sockets.delete(socket.id);
+
+      if (sockets.size === 0) {
+        connectedUsers.delete(userId);
+
+        if (user.role === "employee") {
+          await User.updateOne(
+            { _id: userId },
+            { isTracking: false }
+          ).catch(() => {});
+
+          io.to(`admins:${user.companyId}`).emit(
+            "system:employee-offline",
+            {
+              employeeId: userId,
+              name: user.name,
+              companyId: user.companyId,
+              disconnectedAt: new Date(),
+            }
+          );
+        }
       }
+    });
+
+    /* ================= AUTO RECOVERY ================= */
+    socket.on("connect_error", (err) => {
+      logger.warn("Socket reconnecting...", err.message);
     });
   });
 
-  logger.info('✅ Socket.io initialized');
+  logger.info("✅ Socket initialized (production ready)");
 };
 
-// Export utility to get socket id of a user
-const getUserSocketId = (userId) => connectedUsers.get(userId.toString());
-
-module.exports = { initializeSocket, getUserSocketId };
+module.exports = { initializeSocket };

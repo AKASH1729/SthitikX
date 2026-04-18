@@ -2,6 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const xlsx = require("xlsx");
 const fs = require("fs");
+const path = require("path");
 
 const EmployeeData = require("../models/EmployeeData");
 const User = require("../models/User");
@@ -9,103 +10,79 @@ const { protect } = require("../middleware/auth");
 
 const router = express.Router();
 
-
-// ==============================
-// ✅ MULTER CONFIG
-// ==============================
+/* ==============================
+   ✅ MULTER CONFIG
+============================== */
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, "uploads/");
+    const dir = "uploads/";
+
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir);
+    }
+
+    cb(null, dir);
   },
   filename: function (req, file, cb) {
-    const uniqueName = Date.now() + "-" + file.originalname;
-    cb(null, uniqueName);
+    cb(null, Date.now() + "-" + file.originalname);
   },
 });
 
 const upload = multer({ storage });
 
-
-// ==============================
-// ✅ GET EMPLOYEES (FIXED)
-// ==============================
+/* ==============================
+   ✅ GET EMPLOYEES (MULTI-TENANT SAFE)
+============================== */
 router.get("/users", protect, async (req, res) => {
   try {
-    console.log("👉 Fetching employees...");
+    const users = await User.find({
+      role: "employee",
+      companyId: req.user.companyId, // ✅ FIX
+    }).select("_id name employeeId email");
 
-    const users = await User.find({ role: "employee" })
-      .select("_id name employeeId email");
-
-    console.log("✅ Employees found:", users.length);
-
-    res.status(200).json({
-      success: true,
-      users: users,
-    });
+    res.json({ success: true, users });
   } catch (err) {
-    console.error("❌ FETCH USERS ERROR:", err);
-    res.status(500).json({
-      message: "Server error",
-    });
+    res.status(500).json({ message: "Server error" });
   }
 });
 
-
-// ==============================
-// ✅ UPLOAD EXCEL (FINAL)
-// ==============================
+/* ==============================
+   ✅ UPLOAD EXCEL (FULL FIX)
+============================== */
 router.post(
   "/upload-excel",
   protect,
   upload.single("file"),
   async (req, res) => {
     try {
-      // ==============================
-      // 🔴 FILE CHECK
-      // ==============================
       if (!req.file) {
         return res.status(400).json({ message: "No file uploaded" });
       }
 
       const loggedInUser = req.user;
 
-      console.log("RAW BODY:", req.body);
-      console.log("Logged in:", loggedInUser.name);
-      console.log("Role:", loggedInUser.role);
-
-      // ==============================
-      // ✅ USER ID FIX
-      // ==============================
       let userId;
 
       if (loggedInUser.role === "admin") {
-        userId = String(req.body.userId || "").trim();
+        userId = req.body.userId;
 
-        if (!userId || userId === "undefined" || userId === "null") {
+        if (!userId) {
           return res.status(400).json({
-            message: "Please select a valid employee",
+            message: "Select employee",
           });
         }
       } else {
-        userId = loggedInUser._id.toString();
+        userId = loggedInUser._id;
       }
 
-      console.log("✅ FINAL userId:", userId);
-
-      // ==============================
-      // 🔴 CATEGORY CHECK
-      // ==============================
-      const category = String(req.body.category || "").toLowerCase();
+      const category = (req.body.category || "").toLowerCase();
 
       if (!category) {
         return res.status(400).json({
-          message: "Category is required",
+          message: "Category required",
         });
       }
 
-      // ==============================
-      // ✅ USER EXISTS CHECK
-      // ==============================
       const userExists = await User.findById(userId);
 
       if (!userExists) {
@@ -114,51 +91,60 @@ router.post(
         });
       }
 
-      // ==============================
-      // ✅ READ EXCEL
-      // ==============================
+      /* 🔒 MULTI-TENANT SECURITY */
+      if (
+        userExists.companyId.toString() !==
+        loggedInUser.companyId.toString()
+      ) {
+        return res.status(403).json({
+          message: "Unauthorized",
+        });
+      }
+
+      /* ===== READ EXCEL ===== */
       const workbook = xlsx.readFile(req.file.path);
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const rows = xlsx.utils.sheet_to_json(sheet);
 
       if (!rows.length) {
         return res.status(400).json({
-          message: "Excel file is empty",
+          message: "Empty file",
         });
       }
 
-      // ==============================
-      // ✅ SAVE DATA
-      // ==============================
+      /* ===== SAVE ===== */
       const saved = await EmployeeData.create({
         employeeId: userExists.employeeId,
         category,
         user: userId,
-        uploadedBy: loggedInUser._id.toString(),
+        uploadedBy: loggedInUser._id,
+
+        // ✅ REQUIRED FIXES
+        companyId: loggedInUser.companyId,
+        fileSize: req.file.size,
+        fileType: req.file.mimetype,
+
         data: rows,
         fileName: req.file.filename,
         filePath: "uploads",
         uploadedAt: new Date(),
       });
 
-      console.log("✅ SAVED:", saved._id);
-
-      res.status(200).json({
+      res.json({
         message: "Upload successful",
         count: rows.length,
         id: saved._id,
       });
 
     } catch (err) {
-      console.error("❌ UPLOAD ERROR:", err);
+      console.error(err);
 
-      if (req.file && req.file.path) {
+      if (req.file?.path) {
         fs.unlink(req.file.path, () => {});
       }
 
       res.status(500).json({
-        message: "Server error",
-        error: err.message,
+        message: err.message,
       });
     }
   }

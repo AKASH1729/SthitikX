@@ -1,124 +1,263 @@
 /**
- * Auth Controller
- * Handles registration, login, logout, token refresh
+ * Auth Controller — FINAL VERSION (EMAIL VERIFY + SaaS FLOW 🚀)
  */
 
-const jwt = require('jsonwebtoken');
-const { validationResult } = require('express-validator');
-const User = require('../models/User');
-const logger = require('../config/logger');
+const jwt = require("jsonwebtoken");
+const User = require("../models/User");
+const Company = require("../models/Company");
+const sendEmail = require("../utils/sendEmail");
 
-// Generate access token
-const generateToken = (id) =>
-  jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRE || '7d' });
+/* ================= TEMP STORAGE ================= */
+const pendingUsers = new Map();
 
-// Generate refresh token
-const generateRefreshToken = (id) =>
-  jwt.sign({ id }, process.env.JWT_REFRESH_SECRET, { expiresIn: process.env.JWT_REFRESH_EXPIRE || '30d' });
+/* ================= TOKEN ================= */
+const generateToken = (user) =>
+  jwt.sign(
+    {
+      id: user._id,
+      companyId: user.companyId,
+      role: user.role,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRE || "7d" }
+  );
 
-/**
- * @route   POST /api/auth/login
- * @desc    Login user and return JWT
- * @access  Public
- */
+const generateRefreshToken = (user) =>
+  jwt.sign(
+    {
+      id: user._id,
+      companyId: user.companyId,
+    },
+    process.env.JWT_REFRESH_SECRET,
+    { expiresIn: process.env.JWT_REFRESH_EXPIRE || "30d" }
+  );
+
+/* =========================================
+   📝 REGISTER (EMAIL VERIFY FIRST)
+========================================= */
+const registerCompany = async (req, res) => {
+  try {
+    const { companyName, adminName, email, password, plan = "trial" } = req.body;
+
+    if (!companyName || !adminName || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "All fields required",
+      });
+    }
+
+    const existing = await User.findOne({ email });
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: "Email already exists",
+      });
+    }
+
+    /* 🔥 SAVE TEMP USER */
+    pendingUsers.set(email, {
+      companyName,
+      adminName,
+      email,
+      password,
+      plan,
+    });
+
+    /* 🔐 CREATE TOKEN */
+    const token = jwt.sign({ email }, process.env.JWT_SECRET, {
+      expiresIn: "10m",
+    });
+
+    const verifyUrl = `${process.env.CLIENT_URL}/verify-email/${token}`;
+
+    await sendEmail(
+      email,
+      "Verify your email - SthitiX",
+      `<h2>Verify your account</h2>
+       <p>Click below to verify:</p>
+       <a href="${verifyUrl}">Verify Email</a>`
+    );
+
+    res.json({
+      success: true,
+      message: "Verification email sent",
+    });
+
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* =========================================
+   📧 VERIFY EMAIL
+========================================= */
+const verifyEmail = async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const data = pendingUsers.get(decoded.email);
+
+    if (!data) {
+      return res.status(400).json({
+        message: "Expired or invalid link",
+      });
+    }
+
+    /* ================= TRIAL ================= */
+    if (data.plan === "trial") {
+      const now = new Date();
+
+      const company = await Company.create({
+        name: data.companyName,
+        email: data.email,
+        plan: "trial",
+        planPrice: 0,
+        baseEmployees: 50,
+        extraEmployeePrice: 30,
+        trialExpiresAt: new Date(
+          now.getTime() + 30 * 24 * 60 * 60 * 1000
+        ),
+      });
+
+      await User.create({
+        name: data.adminName,
+        email: data.email,
+        password: data.password,
+        role: "admin",
+        companyId: company._id,
+      });
+
+      pendingUsers.delete(data.email);
+
+      return res.json({
+        success: true,
+        message: "Free trial started 🎉",
+        redirect: "/login",
+      });
+    }
+
+    /* ================= PAID ================= */
+    return res.json({
+      success: true,
+      message: "Email verified",
+      redirect: `/payment?plan=${data.plan}&email=${data.email}`,
+    });
+
+  } catch (err) {
+    res.status(400).json({
+      message: "Invalid or expired token",
+    });
+  }
+};
+
+/* =========================================
+   🔐 LOGIN
+========================================= */
 const login = async (req, res) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, errors: errors.array() });
-    }
-
     const { email, password } = req.body;
 
-    // Find user including password field (select: false by default)
-    const user = await User.findOne({ email, isActive: true }).select('+password');
-    if (!user) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials.' });
+    const user = await User.findOne({
+      email,
+      isActive: true,
+    }).select("+password");
+
+    if (!user || !(await user.matchPassword(password))) {
+      return res.status(401).json({
+        message: "Invalid credentials",
+      });
     }
 
-    const isMatch = await user.matchPassword(password);
-    if (!isMatch) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials.' });
+    /* 🔥 CHECK PLAN */
+    if (user.role !== "super_admin") {
+      const company = await Company.findById(user.companyId);
+
+      const now = new Date();
+
+      const expired =
+        company.plan === "trial"
+          ? company.trialExpiresAt < now
+          : company.subscriptionExpiresAt < now;
+
+      if (expired) {
+        return res.status(403).json({
+          message: "Plan expired",
+          planExpired: true,
+        });
+      }
     }
 
-    const token = generateToken(user._id);
-    const refreshToken = generateRefreshToken(user._id);
+    const token = generateToken(user);
+    const refreshToken = generateRefreshToken(user);
 
-    // Store refresh token
     user.refreshToken = refreshToken;
     await user.save({ validateBeforeSave: false });
-
-    logger.info(`User logged in: ${user.email} [${user.role}]`);
 
     res.json({
       success: true,
       token,
       refreshToken,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        employeeId: user.employeeId,
-        department: user.department,
-        avatar: user.avatar,
-        initials: user.initials,
-      },
+      user,
     });
-  } catch (error) {
-    logger.error(`Login error: ${error.message}`);
-    res.status(500).json({ success: false, message: 'Server error during login.' });
+
+  } catch {
+    res.status(500).json({ message: "Login failed" });
   }
 };
 
-/**
- * @route   POST /api/auth/refresh
- * @desc    Get new access token using refresh token
- * @access  Public
- */
-const refreshToken = async (req, res) => {
+/* =========================================
+   🔁 REFRESH TOKEN
+========================================= */
+const refreshAccessToken = async (req, res) => {
   try {
     const { refreshToken: token } = req.body;
-    if (!token) {
-      return res.status(401).json({ success: false, message: 'Refresh token required.' });
-    }
 
     const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
-    const user = await User.findById(decoded.id).select('+refreshToken');
+
+    const user = await User.findById(decoded.id).select("+refreshToken");
 
     if (!user || user.refreshToken !== token) {
-      return res.status(401).json({ success: false, message: 'Invalid refresh token.' });
+      return res.status(401).json({
+        message: "Invalid refresh token",
+      });
     }
 
-    const newToken = generateToken(user._id);
+    const newToken = generateToken(user);
+
     res.json({ success: true, token: newToken });
-  } catch (error) {
-    res.status(401).json({ success: false, message: 'Invalid or expired refresh token.' });
+
+  } catch {
+    res.status(401).json({
+      message: "Token expired",
+    });
   }
 };
 
-/**
- * @route   GET /api/auth/me
- * @desc    Get current logged-in user
- * @access  Private
- */
+/* =========================================
+   👤 GET ME
+========================================= */
 const getMe = async (req, res) => {
-  const user = await User.findById(req.user._id).populate('assignedGeofence', 'name center radius');
+  const user = await User.findById(req.user._id);
   res.json({ success: true, user });
 };
 
-/**
- * @route   POST /api/auth/logout
- * @desc    Logout and invalidate refresh token
- * @access  Private
- */
+/* =========================================
+   🚪 LOGOUT
+========================================= */
 const logout = async (req, res) => {
-  try {
-    await User.findByIdAndUpdate(req.user._id, { refreshToken: null });
-    res.json({ success: true, message: 'Logged out successfully.' });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Logout failed.' });
-  }
-}; 
+  await User.findByIdAndUpdate(req.user._id, {
+    refreshToken: null,
+  });
 
-module.exports = { login, refreshToken, getMe, logout };
+  res.json({ success: true, message: "Logged out" });
+};
+
+module.exports = {
+  registerCompany,
+  verifyEmail,
+  login,
+  refreshAccessToken,
+  getMe,
+  logout,
+};

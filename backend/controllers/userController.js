@@ -1,105 +1,233 @@
 /**
- * User Controller
- * CRUD operations for employee management
+ * User Controller — FIXED VERSION (NO fieldLocation) 🚀
  */
 
-const User = require('../models/User');
-const logger = require('../config/logger');
+const User = require("../models/User");
 
-/**
- * @route   GET /api/users
- * @access  Private (Admin)
- */
+const Company = require("../models/Company");
+/* =========================================
+   📥 GET USERS
+========================================= */
 const getUsers = async (req, res) => {
   try {
-    const { department, isActive, page = 1, limit = 20, search } = req.query;
-    const query = { role: 'employee' };
+    /* 🔐 AUTH CHECK */
+    if (!req.user || !req.user.companyId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
 
-    if (department) query.department = department;
-    if (isActive !== undefined) query.isActive = isActive === 'true';
-    if (search) {
+    const {
+      search = "",
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    /* 🔥 BASE QUERY */
+    const query = {
+      role: "employee",
+      companyId: req.user.companyId,
+    };
+
+    /* 🔍 SEARCH (SAFE) */
+    if (search && search.trim()) {
       query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { employeeId: { $regex: search, $options: 'i' } },
+        { name: { $regex: search.trim(), $options: "i" } },
+        { email: { $regex: search.trim(), $options: "i" } },
+        { employeeId: { $regex: search.trim(), $options: "i" } },
       ];
     }
 
-    const total = await User.countDocuments(query);
+    /* 📊 FETCH USERS */
     const users = await User.find(query)
-      .populate('assignedGeofence', 'name center radius')
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
+      .populate("assignedGeofence", "name") // ✅ ONLY THIS
+      // ❌ REMOVED fieldLocation populate
+      .limit(Number(limit) || 20)
       .skip((page - 1) * limit)
-      .select('-password -refreshToken');
+      .sort({ createdAt: -1 })
+      .select("-password -refreshToken");
 
-    res.json({ success: true, users, total, page: Number(page), pages: Math.ceil(total / limit) });
+    /* 📦 RESPONSE */
+    res.json({
+      success: true,
+      users,
+    });
+
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error("🔥 GET USERS ERROR:", error);
+
+    res.status(500).json({
+      success: false,
+      message: error.message || "Server error",
+    });
   }
 };
 
-/**
- * @route   POST /api/users
- * @access  Private (Admin)
- */
+/* =========================================
+   ➕ CREATE USER
+========================================= */
 const createUser = async (req, res) => {
   try {
-    const { name, email, password, department, phone, assignedGeofence } = req.body;
+    const {
+      name,
+      email,
+      password,
+      department,
+      phone,
+      assignedGeofence,
+    } = req.body;
 
-    const existing = await User.findOne({ email });
-    if (existing) {
-      return res.status(400).json({ success: false, message: 'Email already registered.' });
+    if (!name || !email || !password) {
+      return res.status(400).json({
+        message: "Name, Email, Password required",
+      });
     }
 
     const user = await User.create({
-      name, email, password, role: 'employee',
-      department, phone, assignedGeofence: assignedGeofence || null,
+      name: name.trim(),
+      email: email.trim().toLowerCase(),
+      password,
+      role: "employee",
+      department,
+      phone,
+      assignedGeofence: assignedGeofence || undefined,
+      companyId: req.user.companyId,
     });
 
     res.status(201).json({
       success: true,
-      user: { id: user._id, name: user.name, email: user.email, employeeId: user.employeeId },
-      message: 'Employee created successfully.',
+      message: "Employee created",
+      user,
     });
+
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error("🔥 CREATE USER ERROR:", error);
+
+    res.status(500).json({
+      message: error.message,
+    });
   }
 };
 
-/**
- * @route   PUT /api/users/:id
- * @access  Private (Admin)
- */
+/* =========================================
+   ✏️ UPDATE USER
+========================================= */
 const updateUser = async (req, res) => {
   try {
-    const allowed = ['name', 'department', 'phone', 'isActive', 'assignedGeofence'];
-    const updates = {};
-    allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
+    const updates = req.body;
 
-    const user = await User.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true })
-      .populate('assignedGeofence', 'name');
+    const user = await User.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        companyId: req.user.companyId,
+      },
+      updates,
+      { new: true }
+    ).populate("assignedGeofence", "name");
 
-    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
-    res.json({ success: true, user });
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      user,
+    });
+
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error("🔥 UPDATE ERROR:", error);
+    res.status(500).json({ message: error.message });
   }
 };
 
-/**
- * @route   DELETE /api/users/:id
- * @access  Private (Admin)
- */
+/* =========================================
+   ❌ DELETE USER
+========================================= */
+
 const deleteUser = async (req, res) => {
   try {
-    // Soft delete - just deactivate
-    const user = await User.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
-    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
-    res.json({ success: true, message: 'Employee deactivated.' });
+    const user = await User.findOneAndDelete({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Employee deleted",
+    });
+
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error("🔥 DELETE ERROR:", error);
+    res.status(500).json({ message: error.message });
   }
 };
+/* =========================================
+   👤 GET LOGGED-IN USER PROFILE
+========================================= */
+const mongoose = require("mongoose");
 
-module.exports = { getUsers, createUser, updateUser, deleteUser };
+const getMe = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("-password");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    let company = null;
+
+    if (user.companyId) {
+      // 🔥 STEP 1: ensure ObjectId
+      const companyId = new mongoose.Types.ObjectId(user.companyId);
+
+      // 🔥 STEP 2: fetch full company
+      const c = await Company.findById(companyId);
+
+      console.log("👉 COMPANY RAW:", c);
+
+      if (c) {
+        // 🔥 STEP 3: map correct expiry field
+        const expiry =
+          c.plan === "trial"
+            ? c.trialExpiresAt
+            : c.subscriptionExpiresAt;
+
+        company = {
+          _id: c._id,
+          name: c.name,
+          plan: c.plan,
+          subscriptionExpiry: expiry,
+        };
+      }
+    }
+
+    console.log("👉 FINAL COMPANY:", company);
+
+    res.json({
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      company: company || null,
+    });
+
+  } catch (error) {
+    console.error("❌ GET ME ERROR:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+module.exports = {
+  getUsers,
+  createUser,
+  updateUser,
+  deleteUser,
+  getMe,
+};

@@ -21,8 +21,11 @@ const getDashboard = async (req, res) => {
   try {
     const { date } = req.query;
 
-    const employees = await User.find({ role: "employee" })
-      .select("_id name");
+    /* 🔥 MULTI-TENANT: ONLY COMPANY USERS */
+    const employees = await User.find({
+      role: "employee",
+      companyId: req.user.companyId
+    }).select("_id name");
 
     let totalDistanceAll = 0;
     let totalTimeAll = 0;
@@ -32,13 +35,14 @@ const getDashboard = async (req, res) => {
 
     for (const emp of employees) {
 
-      /* ================= GET ATTENDANCE ================= */
+      /* 🔥 FILTER ATTENDANCE BY COMPANY */
       const attendance = await Attendance.findOne({
         employee: emp._id,
-        date
+        date,
+        companyId: req.user.companyId
       });
 
-      if (!attendance || !attendance.clockIn) {
+      if (!attendance || !attendance.clockIn?.timestamp) {
         table.push({
           name: emp.name,
           totalDistance: "0.00",
@@ -50,13 +54,14 @@ const getDashboard = async (req, res) => {
       }
 
       const startTime = new Date(attendance.clockIn.timestamp);
-      const endTime = attendance.clockOut
+      const endTime = attendance.clockOut?.timestamp
         ? new Date(attendance.clockOut.timestamp)
-        : new Date(); // if not clocked out
+        : new Date();
 
-      /* ================= GET LOGS IN RANGE ================= */
+      /* 🔥 FILTER LOCATION BY COMPANY */
       const logs = await LocationLog.find({
         employee: emp._id,
+        companyId: req.user.companyId,
         timestamp: { $gte: startTime, $lte: endTime }
       }).sort({ timestamp: 1 });
 
@@ -90,7 +95,6 @@ const getDashboard = async (req, res) => {
 
         totalTime += diff;
 
-        /* 🔥 MOTION DETECTION */
         if (d > 0.01) {
           motionTime += diff;
         }

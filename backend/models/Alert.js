@@ -1,7 +1,3 @@
-/**
- * Alert Model (UPDATED - FLEXIBLE & PRODUCTION READY)
- */
-
 const mongoose = require('mongoose');
 
 const alertSchema = new mongoose.Schema({
@@ -11,20 +7,23 @@ const alertSchema = new mongoose.Schema({
     required: true,
   },
 
+  // 🔥 ADD THIS (MOST IMPORTANT)
+  companyId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: true,
+    index: true,
+  },
+
   type: {
     type: String,
     enum: [
-      // ✅ New standard type
       'geofence-violation',
-
-      // ✅ Existing types (kept for compatibility)
       'geofence_exit',
       'geofence_entry',
       'late_clockin',
       'no_clockin',
       'unusual_movement',
-
-      // ✅ Extra useful types (future-ready)
       'manual_override',
       'system_alert'
     ],
@@ -57,7 +56,6 @@ const alertSchema = new mongoose.Schema({
     default: 'medium',
   },
 
-  // ✅ optional metadata (VERY useful later)
   meta: {
     type: Object,
     default: {},
@@ -72,9 +70,9 @@ const alertSchema = new mongoose.Schema({
   timestamps: true,
 });
 
-// ✅ Indexes (optimized for dashboard)
-alertSchema.index({ employee: 1, isRead: 1 });
-alertSchema.index({ timestamp: -1 });
-alertSchema.index({ type: 1 });
+// 🔥 UPDATED INDEXES (company-based)
+alertSchema.index({ companyId: 1, isRead: 1 });
+alertSchema.index({ companyId: 1, timestamp: -1 });
+alertSchema.index({ companyId: 1, type: 1 });
 
 module.exports = mongoose.model('Alert', alertSchema);

@@ -1,7 +1,12 @@
+/**
+ * User Model — FINAL MULTI-TENANT VERSION 🔥
+ */
+
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
 const userSchema = new mongoose.Schema({
+
   name: {
     type: String,
     required: true,
@@ -12,7 +17,6 @@ const userSchema = new mongoose.Schema({
   email: {
     type: String,
     required: true,
-    unique: true,
     lowercase: true,
     trim: true,
     match: /^\S+@\S+\.\S+$/,
@@ -27,14 +31,22 @@ const userSchema = new mongoose.Schema({
 
   role: {
     type: String,
-    enum: ['admin', 'employee'],
+    enum: ['super_admin', 'admin', 'employee'],
     default: 'employee',
+  },
+
+  /* 🔥 MULTI-TENANT CORE */
+  companyId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: function () {
+      return this.role !== 'super_admin';
+    },
+    index: true,
   },
 
   employeeId: {
     type: String,
-    unique: true,
-    sparse: true,
   },
 
   department: String,
@@ -56,9 +68,6 @@ const userSchema = new mongoose.Schema({
     default: true,
   },
 
-  // =========================
-  // 🔥 TRACKING FIELDS (SYSTEM ONLY)
-  // =========================
   lastLocation: {
     lat: { type: Number, default: null },
     lng: { type: Number, default: null },
@@ -80,73 +89,96 @@ const userSchema = new mongoose.Schema({
     select: false,
   },
 
-}, { timestamps: true });
-
-/* =========================
-   INITIALS
-========================= */
-userSchema.virtual('initials').get(function () {
-  return this.name
-    .split(' ')
-    .map(n => n[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2);
+}, {
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true },
 });
 
 /* =========================
-   HASH PASSWORD
+   🔐 HASH PASSWORD
 ========================= */
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
-  const salt = await bcrypt.genSalt(12);
+
+  const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
+
   next();
 });
 
 /* =========================
-   AUTO EMPLOYEE ID
+   📧 FORCE LOWERCASE EMAIL
 ========================= */
-userSchema.pre('save', async function (next) {
-  if (!this.employeeId && this.role === 'employee') {
-    const count = await mongoose.model('User').countDocuments({ role: 'employee' });
-    this.employeeId = `EMP${String(count + 1).padStart(4, '0')}`;
+userSchema.pre('save', function (next) {
+  if (this.email) {
+    this.email = this.email.toLowerCase();
   }
   next();
 });
 
 /* =========================
-   PASSWORD MATCH
+   🆔 GENERATE SAFE EMPLOYEE ID
+========================= */
+userSchema.pre('save', function (next) {
+  if (!this.employeeId && this.role === 'employee') {
+
+    const companyPart = this.companyId
+      ? this.companyId.toString().slice(-4)
+      : "0000";
+
+    const randomPart = Math.random().toString(36).substring(2, 6).toUpperCase();
+
+    const timePart = Date.now().toString().slice(-4);
+
+    this.employeeId = `EMP-${companyPart}-${randomPart}-${timePart}`;
+  }
+
+  next();
+});
+
+/* =========================
+   🔑 PASSWORD MATCH
 ========================= */
 userSchema.methods.matchPassword = async function (enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
 };
 
 /* =========================
-   UPDATE LOCATION (SYSTEM ONLY)
+   🧠 INITIALS
 ========================= */
-userSchema.methods.updateLocation = async function (lat, lng, battery = null) {
-  this.lastLocation = {
-    lat,
-    lng,
-    timestamp: new Date(),
-  };
-
-  if (battery !== null) {
-    this.battery = battery;
-  }
-
-  this.isTracking = true;
-
-  await this.save();
-};
+userSchema.virtual('initials').get(function () {
+  return this.name
+    ?.split(' ')
+    .map(n => n[0])
+    .join('')
+    .toUpperCase();
+});
 
 /* =========================
-   SET OFFLINE
+   ⚡ INDEXES (VERY IMPORTANT)
 ========================= */
-userSchema.methods.setOffline = async function () {
-  this.isTracking = false;
-  await this.save();
-};
+
+// ✅ Email unique per company (active users only)
+userSchema.index(
+  { email: 1, companyId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { isActive: true }
+  }
+);
+
+// ✅ Employee ID unique per company
+userSchema.index(
+  { companyId: 1, employeeId: 1 },
+  {
+    unique: true,
+    sparse: true
+  }
+);
+
+// ✅ Fast queries
+userSchema.index({ companyId: 1, role: 1 });
+userSchema.index({ companyId: 1, isActive: 1 });
 
 module.exports = mongoose.model('User', userSchema);

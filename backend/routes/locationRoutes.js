@@ -1,25 +1,25 @@
-const express = require('express');
-const router = express.Router();
+// const express = require('express');
+// const router = express.Router();
 
-const {
-  updateLocation,
-  getLiveLocations,
-  getRouteHistory
-} = require('../controllers/locationController');
+// const {
+//   updateLocation,
+//   getLiveLocations,
+//   getRouteHistory
+// } = require('../controllers/locationController');
 
-const { protect } = require('../middleware/auth');
+// const { protect } = require('../middleware/auth');
 
-/* =========================
-   ROUTES
-========================= */
+// /* =========================
+//    ROUTES
+// ========================= */
 
-// 🔥 Update location (called by employee)
-router.post('/update', protect, updateLocation);
+// // 🔥 Update location (called by employee)
+// router.post('/update', protect, updateLocation);
 
-// 🔥 Get all employees live location (admin)
-router.get('/live', protect, getLiveLocations);
+// // 🔥 Get all employees live location (admin)
+// router.get('/live', protect, getLiveLocations);
 
-// 🔥 Get movement history
-router.get('/history/:employeeId', protect, getRouteHistory);
+// // 🔥 Get movement history
+// router.get('/history/:employeeId', protect, getRouteHistory);
 
-module.exports = router;
+// module.exports = router;

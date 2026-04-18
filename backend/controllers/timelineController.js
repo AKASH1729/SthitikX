@@ -2,18 +2,22 @@ const LocationLog = require("../models/LocationLog");
 const { generateTimeline } = require("../services/timelineService");
 
 /* =========================================
-   📊 GET TIMELINE
+   📊 GET TIMELINE (MULTI-TENANT SAFE 🔥)
 ========================================= */
 const getTimeline = async (req, res) => {
   try {
     let { employeeId, date } = req.query;
 
-    // 🔒 employee restriction
+    /* =========================
+       🔒 EMPLOYEE RESTRICTION
+    ========================= */
     if (req.user.role === "employee") {
       employeeId = req.user.employeeId;
     }
 
-    // ❌ validation
+    /* =========================
+       ❌ VALIDATION
+    ========================= */
     if (!employeeId || !date) {
       return res.status(400).json({
         success: false,
@@ -21,11 +25,19 @@ const getTimeline = async (req, res) => {
       });
     }
 
-    // 📦 fetch logs
-    const logs = await LocationLog.find({
+    /* =========================
+       🔥 MULTI-TENANT FILTER
+    ========================= */
+    const query = {
       employeeId,
       date,
-    }).sort({ timestamp: 1 });
+      companyId: req.user.companyId, // 🔥 CRITICAL
+    };
+
+    /* =========================
+       📦 FETCH LOGS
+    ========================= */
+    const logs = await LocationLog.find(query).sort({ timestamp: 1 });
 
     console.log("📍 LOG COUNT:", logs.length);
 
@@ -33,7 +45,9 @@ const getTimeline = async (req, res) => {
       return res.json([]);
     }
 
-    // 🔥 generate timeline
+    /* =========================
+       🔥 GENERATE TIMELINE
+    ========================= */
     const timeline = generateTimeline(logs);
 
     console.log("🔥 TIMELINE:", timeline);

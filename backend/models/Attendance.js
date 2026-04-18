@@ -7,6 +7,14 @@ const attendanceSchema = new mongoose.Schema({
     required: true,
   },
 
+  // 🔥 ADD THIS (MOST IMPORTANT)
+  companyId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: true,
+    index: true,
+  },
+
   date: {
     type: String,
     required: true,
@@ -32,10 +40,9 @@ const attendanceSchema = new mongoose.Schema({
     isWithinGeofence: { type: Boolean, default: false },
   },
 
-  // ✅ NEW: Battery support
   battery: {
     type: Number,
-    default: null, // no error if not provided
+    default: null,
   },
 
   totalHours: {
@@ -58,11 +65,22 @@ const attendanceSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Geofence',
   },
+workLocation: {
+  name: { type: String },
+  lat: { type: Number },
+  lng: { type: Number },
+},
+}, { timestamps: true }); 
 
-}, { timestamps: true });
+/* 🔥 UPDATED UNIQUE INDEX (MULTI-TENANT SAFE) */
+attendanceSchema.index(
+  { employee: 1, date: 1, companyId: 1 },
+  { unique: true }
+);
 
-// Prevent duplicate attendance per day
-attendanceSchema.index({ employee: 1, date: 1 }, { unique: true });
+/* 🔥 EXTRA INDEXES (PERFORMANCE) */
+attendanceSchema.index({ companyId: 1, date: 1 });
+attendanceSchema.index({ companyId: 1, employee: 1 });
 
 /* =========================
    CALCULATE HOURS
@@ -91,7 +109,6 @@ attendanceSchema.pre('save', function (next) {
 });
 
 module.exports = mongoose.model('Attendance', attendanceSchema);
-
 
 
 

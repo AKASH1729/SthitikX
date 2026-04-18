@@ -1,3 +1,7 @@
+/**
+ * Axios API — FULL FIXED VERSION 🚀
+ */
+
 import axios from "axios";
 
 const api = axios.create({
@@ -5,16 +9,30 @@ const api = axios.create({
   timeout: 15000,
 });
 
-// 🔥 REQUEST INTERCEPTOR
+/* =========================
+   🔐 REQUEST INTERCEPTOR
+========================= */
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem("token");
 
-    if (token) {
+    /* 🔥 SKIP AUTH FOR PUBLIC ROUTES */
+    const publicRoutes = [
+      "/payment/order",
+      "/payment/verify",
+      "/auth/login",
+      "/auth/register-company",
+      "/auth/register",
+    ];
+
+    const isPublic = publicRoutes.some((route) =>
+      config.url?.includes(route)
+    );
+
+    if (token && !isPublic) {
       config.headers.Authorization = `Bearer ${token}`;
     }
 
-    // ✅ Don't override FormData
     if (!(config.data instanceof FormData)) {
       config.headers["Content-Type"] = "application/json";
     }
@@ -24,29 +42,100 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// 🔥 RESPONSE INTERCEPTOR (TOKEN REFRESH)
+/* =========================
+   🔁 TOKEN REFRESH SYSTEM
+========================= */
+let isRefreshing = false;
+let failedQueue = [];
+
+const processQueue = (error, token = null) => {
+  failedQueue.forEach((prom) => {
+    if (error) prom.reject(error);
+    else prom.resolve(token);
+  });
+
+  failedQueue = [];
+};
+
+/* =========================
+   🚪 FORCE LOGOUT
+========================= */
+const forceLogout = (message = "Session expired") => {
+  console.warn("Logout:", message);
+
+  localStorage.clear();
+
+  window.location.href = "/login"; // ✅ better UX
+};
+
+/* =========================
+   🔥 RESPONSE INTERCEPTOR
+========================= */
 api.interceptors.response.use(
   (response) => response,
-  async (error) => {
-    const original = error.config;
 
-    // ✅ Prevent crash if no response (network error)
+  async (error) => {
+    const originalRequest = error.config;
+
     if (!error.response) {
       return Promise.reject(error);
     }
 
-    // 🔥 Handle 401 (token expired)
-    if (error.response.status === 401 && !original._retry) {
-      original._retry = true;
+    const { status, data } = error.response;
+
+    /* =========================================
+       🔥 PLAN EXPIRED
+    ========================================= */
+    if (data?.planExpired) {
+      alert("Your plan expired. Please upgrade.");
+      window.location.href = "/pricing";
+      return Promise.reject(error);
+    }
+
+    /* =========================================
+       ⚠️ SKIP PUBLIC ROUTES
+    ========================================= */
+    const publicRoutes = [
+      "/payment/order",
+      "/payment/verify",
+      "/auth/login",
+      "/auth/register",
+    ];
+
+    const isPublic = publicRoutes.some((route) =>
+      originalRequest.url?.includes(route)
+    );
+
+    /* =========================================
+       🔐 HANDLE 401
+    ========================================= */
+    if (status === 401 && !originalRequest._retry && !isPublic) {
+
+      if (originalRequest.url.includes("/auth/refresh")) {
+        forceLogout("Session expired. Please login again.");
+        return Promise.reject(error);
+      }
+
+      if (isRefreshing) {
+        return new Promise((resolve, reject) => {
+          failedQueue.push({
+            resolve: (token) => {
+              originalRequest.headers.Authorization = `Bearer ${token}`;
+              resolve(api(originalRequest));
+            },
+            reject: (err) => reject(err),
+          });
+        });
+      }
+
+      originalRequest._retry = true;
+      isRefreshing = true;
 
       try {
         const refreshToken = localStorage.getItem("refreshToken");
 
-        // ❗ If no refresh token → logout immediately
         if (!refreshToken) {
-          localStorage.clear();
-          window.location.href = "/login";
-          return;
+          throw new Error("No refresh token");
         }
 
         const { data } = await axios.post(
@@ -54,24 +143,26 @@ api.interceptors.response.use(
           { refreshToken }
         );
 
-        // ✅ Save new token
-        localStorage.setItem("token", data.token);
+        const newToken = data.token;
 
-        // ✅ Update headers globally
+        localStorage.setItem("token", newToken);
+
         api.defaults.headers.common[
           "Authorization"
-        ] = `Bearer ${data.token}`;
+        ] = `Bearer ${newToken}`;
 
-        original.headers.Authorization = `Bearer ${data.token}`;
+        processQueue(null, newToken);
 
-        // 🔁 Retry original request
-        return api(original);
+        originalRequest.headers.Authorization = `Bearer ${newToken}`;
+
+        return api(originalRequest);
 
       } catch (err) {
-        console.error("Refresh failed:", err);
-
-        localStorage.clear();
-        window.location.href = "/login";
+        processQueue(err, null);
+        forceLogout("Session expired. Please login again.");
+        return Promise.reject(err);
+      } finally {
+        isRefreshing = false;
       }
     }
 

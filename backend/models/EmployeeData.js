@@ -1,43 +1,62 @@
+/**
+ * EmployeeData Model — ENTERPRISE SaaS VERSION 🔥
+ */
+
 const mongoose = require("mongoose");
 
 const employeeDataSchema = new mongoose.Schema({
+
+  /* ================= CORE ================= */
+
   employeeId: {
     type: String,
+    required: true,
+    trim: true,
+  },
+
+  companyId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Company",
     required: true,
     index: true,
   },
 
-  category: {
-    type: String,
-    enum: ["flow", "current"],
-    required: true,
-    lowercase: true,
-  },
-
-  // ✅ DATA OWNER (EMPLOYEE)
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
     required: true,
+    index: true,
   },
 
-  // ✅ NEW: WHO UPLOADED (ADMIN / EMPLOYEE)
   uploadedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
-
+    required: true,
   },
 
-  // ✅ Excel data
+  /* ================= CATEGORY ================= */
+
+  category: {
+    type: String,
+    required: true,
+    lowercase: true,
+    trim: true,
+     // 🔥 controlled categories
+  },
+
+  /* ================= DATA ================= */
+
   data: {
     type: mongoose.Schema.Types.Mixed,
-    required: true, 
+    required: true,
   },
 
-  // ✅ File inf
+  /* ================= FILE ================= */
+
   fileName: {
     type: String,
     required: true,
+    trim: true,
   },
 
   filePath: {
@@ -45,13 +64,51 @@ const employeeDataSchema = new mongoose.Schema({
     required: true,
   },
 
+  fileSize: {
+    type: Number,
+    required: true,
+  },
+
+  fileType: {
+    type: String, // 🔥 NEW (pdf, image, etc)
+  },
+
+  /* ================= STATUS ================= */
+
+  isDeleted: {
+    type: Boolean,
+    default: false,
+  },
+
+  /* ================= META ================= */
+
   uploadedAt: {
     type: Date,
     default: Date.now,
+    index: true,
   },
+
+}, {
+  timestamps: true,
 });
 
-// Index
-employeeDataSchema.index({ employeeId: 1, user: 1 });
 
-module.exports = mongoose.model("EmployeeData", employeeDataSchema);
+/* =========================
+   🔥 INDEXES
+========================= */
+
+employeeDataSchema.index({ companyId: 1, employeeId: 1 });
+employeeDataSchema.index({ companyId: 1, user: 1 });
+employeeDataSchema.index({ companyId: 1, category: 1 });
+employeeDataSchema.index({ companyId: 1, uploadedAt: -1 });
+
+/* 🔥 SOFT DELETE INDEX */
+employeeDataSchema.index({ companyId: 1, isDeleted: 1 });
+
+/* 🔥 DUPLICATE CONTROL */
+employeeDataSchema.index(
+  { companyId: 1, employeeId: 1, fileName: 1 },
+  { unique: false }
+);
+
+module.exports = mongoose.model("EmployeeData", employeeDataSchema);  

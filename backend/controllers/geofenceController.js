@@ -1,10 +1,10 @@
 const Geofence = require('../models/Geofence');
 
 /* =========================================
-   📏 HAVERSINE DISTANCE FUNCTION
+   📏 HAVERSINE DISTANCE
 ========================================= */
 const calculateDistance = (lat1, lon1, lat2, lon2) => {
-  const R = 6371000; // meters
+  const R = 6371000;
   const toRad = (v) => (v * Math.PI) / 180;
 
   const dLat = toRad(lat2 - lat1);
@@ -20,10 +20,13 @@ const calculateDistance = (lat1, lon1, lat2, lon2) => {
 };
 
 /* =========================================
-   🧠 REUSABLE CHECK FUNCTION
+   🧠 REUSABLE CHECK (MULTI-TENANT SAFE)
 ========================================= */
-const isInsideGeofence = async (lat, lng) => {
-  const geofences = await Geofence.find({ isActive: true });
+const isInsideGeofence = async (lat, lng, companyId) => {
+  const geofences = await Geofence.find({
+    isActive: true,
+    companyId, // 🔥 FIX
+  });
 
   for (const fence of geofences) {
     const distance = calculateDistance(
@@ -41,37 +44,45 @@ const isInsideGeofence = async (lat, lng) => {
     }
   }
 
-  return {
-    inside: false,
-    geofence: null,
-  };
+  return { inside: false, geofence: null };
 };
 
 /* =========================================
-   📥 GET ALL GEOFENCES
+   📥 GET GEOFENCES
 ========================================= */
 const getGeofences = async (req, res) => {
   try {
-    const geofences = await Geofence.find({ isActive: true });
+    const geofences = await Geofence.find({
+      isActive: true,
+      companyId: req.user.companyId, // 🔥 FIX
+    });
 
-    res.json({
-      success: true,
-      geofences,
-    });
+    res.json({ success: true, geofences });
   } catch (err) {
-    res.status(500).json({
-      success: false,
-      message: err.message,
-    });
+    res.status(500).json({ success: false, message: err.message });
   }
 };
 
 /* =========================================
-   ➕ CREATE GEOFENCE
+   ➕ CREATE GEOFENCE (MAX 10KM)
 ========================================= */
 const createGeofence = async (req, res) => {
   try {
     const { name, description, center, radius, address, color } = req.body;
+
+    if (!center?.lat || !center?.lng) {
+      return res.status(400).json({
+        success: false,
+        message: "Center coordinates required",
+      });
+    }
+
+    if (radius > 10000) {
+      return res.status(400).json({
+        success: false,
+        message: "Max radius is 10km (10000 meters)",
+      });
+    }
 
     const geofence = await Geofence.create({
       name,
@@ -81,28 +92,33 @@ const createGeofence = async (req, res) => {
       address,
       color,
       createdBy: req.user._id,
+      companyId: req.user.companyId, // 🔥 REQUIRED
     });
 
-    res.status(201).json({
-      success: true,
-      geofence,
-    });
+    res.status(201).json({ success: true, geofence });
 
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
 /* =========================================
-   ✏️ UPDATE GEOFENCE
+   ✏️ UPDATE GEOFENCE (SECURE)
 ========================================= */
 const updateGeofence = async (req, res) => {
   try {
-    const geofence = await Geofence.findByIdAndUpdate(
-      req.params.id,
+    if (req.body.radius && req.body.radius > 10000) {
+      return res.status(400).json({
+        success: false,
+        message: "Max radius is 10km",
+      });
+    }
+
+    const geofence = await Geofence.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        companyId: req.user.companyId, // 🔥 SECURITY
+      },
       req.body,
       { new: true, runValidators: true }
     );
@@ -110,31 +126,37 @@ const updateGeofence = async (req, res) => {
     if (!geofence) {
       return res.status(404).json({
         success: false,
-        message: 'Geofence not found',
+        message: 'Geofence not found or unauthorized',
       });
     }
 
-    res.json({
-      success: true,
-      geofence,
-    });
+    res.json({ success: true, geofence });
 
   } catch (err) {
-    res.status(500).json({
-      success: false,
-      message: err.message,
-    });
+    res.status(500).json({ success: false, message: err.message });
   }
 };
 
 /* =========================================
-   ❌ DELETE (SOFT DELETE)
+   ❌ DELETE (SOFT DELETE SAFE)
 ========================================= */
 const deleteGeofence = async (req, res) => {
   try {
-    await Geofence.findByIdAndUpdate(req.params.id, {
-      isActive: false,
-    });
+    const geofence = await Geofence.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        companyId: req.user.companyId,
+      },
+      { isActive: false },
+      { new: true }
+    );
+
+    if (!geofence) {
+      return res.status(404).json({
+        success: false,
+        message: 'Geofence not found or unauthorized',
+      });
+    }
 
     res.json({
       success: true,
@@ -150,7 +172,7 @@ const deleteGeofence = async (req, res) => {
 };
 
 /* =========================================
-   📍 CHECK GEOFENCE API
+   📍 CHECK GEOFENCE
 ========================================= */
 const checkGeofence = async (req, res) => {
   try {
@@ -163,7 +185,11 @@ const checkGeofence = async (req, res) => {
       });
     }
 
-    const result = await isInsideGeofence(lat, lng);
+    const result = await isInsideGeofence(
+      lat,
+      lng,
+      req.user.companyId // 🔥 FIX
+    );
 
     res.json({
       success: true,
@@ -183,7 +209,7 @@ const checkGeofence = async (req, res) => {
 };
 
 /* =========================================
-   📦 EXPORTS
+   EXPORTS
 ========================================= */
 module.exports = {
   getGeofences,
@@ -191,5 +217,5 @@ module.exports = {
   updateGeofence,
   deleteGeofence,
   checkGeofence,
-  isInsideGeofence, // 🔥 reusable for attendance
+  isInsideGeofence,
 };

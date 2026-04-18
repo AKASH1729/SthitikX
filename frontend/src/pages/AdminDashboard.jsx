@@ -1,31 +1,104 @@
 /**
- * AdminDashboard — Overview page with KPIs, charts, and alerts
+ * AdminDashboard — AI-Powered SaaS Dashboard 🚀
+ * Enhanced with modern aesthetics, animations, and impressive charts.
  */
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, LineChart, Line
+  Tooltip, ResponsiveContainer, AreaChart, Area,
+  PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { format, parseISO } from 'date-fns';
+import { motion, AnimatePresence } from 'framer-motion';
+import { useAutoAnimate } from '@formkit/auto-animate/react';
+import {
+  FiAlertCircle, FiMapPin, FiUsers, FiCheckCircle,
+  FiXCircle, FiTrendingUp, FiClock, FiUserCheck
+} from 'react-icons/fi';
+
 import api from '../services/api';
 import { useSocket } from '../context/SocketContext';
+import { useAuth } from '../context/AuthContext';
+
 import StatCard from '../components/Shared/StatCard';
 import LoadingSpinner from '../components/Shared/LoadingSpinner';
 
+// Animation variants
+const containerVariants = {
+  hidden: { opacity: 0 },
+  show: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.08
+    }
+  }
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 20 },
+  show: { opacity: 1, y: 0 }
+};
+
+const chartVariants = {
+  hidden: { opacity: 0, scale: 0.98 },
+  show: { opacity: 1, scale: 1, transition: { delay: 0.2, duration: 0.5 } }
+};
+
+// Custom Tooltip for Charts
+const CustomTooltip = ({ active, payload, label }) => {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-white/90 backdrop-blur-sm shadow-lg rounded-lg p-2 border border-gray-200">
+        <p className="font-semibold text-sm">{label}</p>
+        <p className="text-blue-600 text-sm">{`Attendance: ${payload[0].value}`}</p>
+      </div>
+    );
+  }
+  return null;
+};
+
 export default function AdminDashboard() {
   const { on, off } = useSocket();
+  const { user } = useAuth();
   const navigate = useNavigate();
-  const [stats, setStats]     = useState(null);
+  const [parent] = useAutoAnimate();
+
+  const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  // Role protection
+  if (user?.role === "employee") {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="text-center mt-20 text-red-500 font-semibold"
+      >
+        Access Denied – Admin only.
+      </motion.div>
+    );
+  }
 
   const fetchStats = useCallback(async () => {
     try {
+      setError(null);
       const { data } = await api.get('/dashboard/stats');
-      setStats(data.stats);
+      setStats(prev => ({
+        ...data.stats,
+        totalEmployees: data.stats.totalEmployees,
+        todayPresent: data.stats.todayPresent,
+        todayAbsent: data.stats.todayAbsent,
+        activeNow: data.stats.activeNow,
+        attendanceRate: data.stats.totalEmployees
+          ? Math.round((data.stats.todayPresent / data.stats.totalEmployees) * 100)
+          : 0
+      }));
     } catch (err) {
-      console.error('Failed to fetch stats', err);
+      console.error(err);
+      setError("Failed to load dashboard data.");
     } finally {
       setLoading(false);
     }
@@ -34,180 +107,342 @@ export default function AdminDashboard() {
   useEffect(() => {
     fetchStats();
 
-    // Refresh stats on real-time events
     const refresh = () => fetchStats();
-    on('employee:clocked-in',  refresh);
+
+    on('employee:clocked-in', refresh);
     on('employee:clocked-out', refresh);
-    on('alert:geofence-exit',  refresh);
+    on('alert:geofence-exit', refresh);
+
+    const interval = setInterval(fetchStats, 30000);
 
     return () => {
-      off('employee:clocked-in',  refresh);
+      off('employee:clocked-in', refresh);
       off('employee:clocked-out', refresh);
-      off('alert:geofence-exit',  refresh);
+      off('alert:geofence-exit', refresh);
+      clearInterval(interval);
     };
   }, [fetchStats, on, off]);
 
   const markRead = async (id) => {
     await api.put(`/dashboard/alerts/${id}/read`);
-    setStats(s => ({
+    setStats((s) => ({
       ...s,
       recentAlerts: s.recentAlerts.filter(a => a._id !== id),
+      unreadAlerts: s.unreadAlerts - 1
     }));
   };
 
   if (loading) return <LoadingSpinner fullScreen text="Loading dashboard…" />;
+  if (error) {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="text-center mt-20"
+      >
+        <p className="text-red-500">{error}</p>
+        <motion.button
+          onClick={fetchStats}
+          className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg shadow"
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+        >
+          Retry
+        </motion.button>
+      </motion.div>
+    );
+  }
+  if (!stats) return <LoadingSpinner fullScreen text="Preparing dashboard..." />;
 
-  const chartData = stats?.weeklyAttendance?.map(d => ({
-    day:   format(parseISO(d.date), 'EEE'),
+  // Prepare chart data
+  const chartData = stats.weeklyAttendance?.map(d => ({
+    day: format(parseISO(d.date), 'EEE'),
     count: d.count,
   })) || [];
 
-  const attendanceRate = stats?.totalEmployees
-    ? Math.round((stats.todayPresent / stats.totalEmployees) * 100)
-    : 0;
+  // Pie data for attendance distribution
+  const pieData = [
+    { name: 'Present', value: stats.todayPresent, color: '#22c55e' },
+    { name: 'Absent', value: stats.todayAbsent, color: '#ef4444' }
+  ];
 
   return (
-    <div className="p-6 space-y-6 animate-fade-in">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
-            {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
-          </p>
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-4 md:p-6 space-y-6"
+    >
+      {/* Header with glassmorphism */}
+      <motion.div
+        className="relative overflow-hidden rounded-2xl bg-white/80 backdrop-blur-md shadow-lg p-6 border border-white/20"
+        initial={{ y: -20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ type: 'spring', stiffness: 100 }}
+      >
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+          <div>
+            <h1 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-gray-800 to-gray-600 bg-clip-text text-transparent">
+              Dashboard
+            </h1>
+            <p className="text-gray-500 mt-1 flex items-center gap-2">
+              <FiClock className="text-blue-500" />
+              {new Date().toLocaleDateString('en-IN', {
+                weekday: 'long',
+                day: 'numeric',
+                month: 'long',
+                year: 'numeric'
+              })}
+            </p>
+            <p className="text-xs text-gray-400 mt-1">
+              {user?.role === 'super_admin' ? '👑 Super Admin' : `Company: ${user?.companyId}`}
+            </p>
+          </div>
+          <motion.button
+            onClick={() => navigate('/app/live-map')}
+            className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl shadow-md hover:shadow-lg transition-all"
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
+          >
+            <FiMapPin className="text-lg" /> Live Tracking Map
+          </motion.button>
         </div>
-        <button onClick={() => navigate('/live-map')} className="btn-primary text-sm flex items-center gap-2">
-          <span>🗺</span> Live Map
-        </button>
-      </div>
+      </motion.div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          title="Total Employees"
-          value={stats?.totalEmployees ?? '—'}
-          icon="👥" color="blue"
-          subtitle="Active workforce"
-        />
-        <StatCard
-          title="Present Today"
-          value={stats?.todayPresent ?? '—'}
-          icon="✅" color="green"
-          subtitle={`${attendanceRate}% attendance rate`}
-        />
-        <StatCard
-          title="Absent Today"
-          value={stats?.todayAbsent ?? '—'}
-          icon="❌" color="red"
-          subtitle="Not clocked in"
-        />
-        <StatCard
-          title="Tracking Now"
-          value={stats?.activeNow ?? '—'}
-          icon="📡" color="purple"
-          subtitle="Live GPS active"
-        />
-      </div>
+      {/* KPI Cards - Enhanced with gradients and animations */}
+      <motion.div
+        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5"
+        variants={containerVariants}
+        initial="hidden"
+        animate="show"
+      >
+        <motion.div variants={itemVariants}>
+          <StatCard
+            title="Total Employees"
+            value={stats.totalEmployees}
+            icon={<FiUsers className="text-blue-500" size={22} />}
+            color="blue"
+            animate={true}
+            gradient="from-blue-50 to-blue-100"
+          />
+        </motion.div>
+        <motion.div variants={itemVariants}>
+          <StatCard
+            title="Present Today"
+            value={stats.todayPresent}
+            icon={<FiCheckCircle className="text-green-500" size={22} />}
+            color="green"
+            animate={true}
+            gradient="from-green-50 to-green-100"
+          />
+        </motion.div>
+        <motion.div variants={itemVariants}>
+          <StatCard
+            title="Absent Today"
+            value={stats.todayAbsent}
+            icon={<FiXCircle className="text-red-500" size={22} />}
+            color="red"
+            animate={true}
+            gradient="from-red-50 to-red-100"
+          />
+        </motion.div>
+        <motion.div variants={itemVariants}>
+          <StatCard
+            title="Live Tracking"
+            value={stats.activeNow}
+            icon={<FiMapPin className="text-purple-500" size={22} />}
+            color="purple"
+            animate={true}
+            gradient="from-purple-50 to-purple-100"
+            suffix="now"
+          />
+        </motion.div>
+      </motion.div>
 
-      {/* Charts row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Weekly Attendance Bar Chart */}
-        <div className="card p-5 lg:col-span-2">
-          <h3 className="text-sm font-semibold text-gray-900 mb-4">Weekly Attendance</h3>
-          <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={chartData} barSize={28}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="day" tick={{ fontSize: 12, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 12, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-              <Tooltip
-                contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 6px -1px rgba(0,0,0,.1)', fontSize: 12 }}
+      {/* Charts Row: Area Chart + Attendance Rate */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Weekly Attendance Trend (Area Chart) */}
+        <motion.div
+          className="lg:col-span-2 bg-white rounded-2xl shadow-md p-5 border border-gray-100"
+          variants={chartVariants}
+          initial="hidden"
+          animate="show"
+        >
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="font-semibold text-gray-700 flex items-center gap-2">
+              <FiTrendingUp className="text-blue-500" /> Weekly Attendance Trend
+            </h3>
+            <span className="text-xs text-gray-400">Last 7 days</span>
+          </div>
+          <ResponsiveContainer width="100%" height={260}>
+            <AreaChart data={chartData}>
+              <defs>
+                <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis dataKey="day" tick={{ fontSize: 12 }} />
+              <YAxis tick={{ fontSize: 12 }} />
+              <Tooltip content={<CustomTooltip />} />
+              <Area
+                type="monotone"
+                dataKey="count"
+                stroke="#3b82f6"
+                strokeWidth={2}
+                fill="url(#colorCount)"
+                animationDuration={1200}
               />
-              <Bar dataKey="count" name="Present" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-            </BarChart>
+            </AreaChart>
           </ResponsiveContainer>
-        </div>
+        </motion.div>
 
-        {/* Today's Donut summary */}
-        <div className="card p-5">
-          <h3 className="text-sm font-semibold text-gray-900 mb-4">Today's Summary</h3>
-          <div className="space-y-3">
-            {[
-              { label: 'Present',  value: stats?.todayPresent,  color: 'bg-green-500'  },
-              { label: 'Absent',   value: stats?.todayAbsent,   color: 'bg-red-400'    },
-              { label: 'Tracking', value: stats?.activeNow,     color: 'bg-blue-500'   },
-            ].map(item => (
-              <div key={item.label}>
-                <div className="flex justify-between text-xs text-gray-600 mb-1">
-                  <span>{item.label}</span>
-                  <span className="font-medium">{item.value}</span>
-                </div>
-                <div className="w-full bg-gray-100 rounded-full h-1.5">
-                  <div
-                    className={`h-1.5 rounded-full ${item.color} transition-all`}
-                    style={{ width: `${stats?.totalEmployees ? (item.value / stats.totalEmployees) * 100 : 0}%` }}
-                  />
-                </div>
-              </div>
-            ))}
-
-            <div className="pt-3 border-t border-gray-100 text-center">
-              <span className="text-3xl font-bold text-gray-900">{attendanceRate}%</span>
-              <p className="text-xs text-gray-500 mt-0.5">Attendance Rate</p>
-            </div>
+        {/* Attendance Rate - Circular Progress */}
+        <motion.div
+          className="bg-white rounded-2xl shadow-md p-5 border border-gray-100 flex flex-col items-center justify-center"
+          variants={chartVariants}
+          initial="hidden"
+          animate="show"
+        >
+          <h3 className="font-semibold text-gray-700 mb-2">Today's Attendance Rate</h3>
+          <div className="relative w-36 h-36">
+            <svg className="w-full h-full" viewBox="0 0 100 100">
+              <circle
+                cx="50"
+                cy="50"
+                r="42"
+                fill="none"
+                stroke="#e5e7eb"
+                strokeWidth="8"
+              />
+              <circle
+                cx="50"
+                cy="50"
+                r="42"
+                fill="none"
+                stroke="#3b82f6"
+                strokeWidth="8"
+                strokeDasharray={`${2 * Math.PI * 42}`}
+                strokeDashoffset={`${2 * Math.PI * 42 * (1 - stats.attendanceRate / 100)}`}
+                strokeLinecap="round"
+                transform="rotate(-90 50 50)"
+                className="transition-all duration-1000"
+              />
+              <text
+                x="50"
+                y="55"
+                textAnchor="middle"
+                fontSize="20"
+                fontWeight="bold"
+                fill="#1f2937"
+              >
+                {stats.attendanceRate}%
+              </text>
+            </svg>
           </div>
-        </div>
+          <p className="text-sm text-gray-500 mt-3">
+            {stats.todayPresent} out of {stats.totalEmployees} employees
+          </p>
+        </motion.div>
       </div>
 
-      {/* Recent Alerts */}
-      <div className="card">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-          <h3 className="text-sm font-semibold text-gray-900">
-            Recent Alerts
-            {stats?.unreadAlerts > 0 && (
-              <span className="ml-2 bg-red-500 text-white text-xs rounded-full px-1.5 py-0.5">{stats.unreadAlerts}</span>
-            )}
+      {/* Second row: Pie chart + Alerts */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Attendance Distribution Pie */}
+        <motion.div
+          className="bg-white rounded-2xl shadow-md p-5 border border-gray-100"
+          initial={{ opacity: 0, x: -20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.4 }}
+        >
+          <h3 className="font-semibold text-gray-700 mb-4 flex items-center gap-2">
+            <FiUserCheck className="text-blue-500" /> Attendance Breakdown
           </h3>
-          <button onClick={() => navigate('/alerts')} className="text-xs text-blue-600 hover:underline">View all</button>
-        </div>
+          <ResponsiveContainer width="100%" height={220}>
+            <PieChart>
+              <Pie
+                data={pieData}
+                cx="50%"
+                cy="50%"
+                innerRadius={50}
+                outerRadius={80}
+                paddingAngle={5}
+                dataKey="value"
+                animationDuration={800}
+              >
+                {pieData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={entry.color} />
+                ))}
+              </Pie>
+              <Legend verticalAlign="bottom" height={36} />
+              <Tooltip />
+            </PieChart>
+          </ResponsiveContainer>
+        </motion.div>
 
-        {stats?.recentAlerts?.length === 0 ? (
-          <div className="px-5 py-8 text-center text-sm text-gray-400">
-            <span className="text-2xl block mb-2">✅</span>
-            No unread alerts
+        {/* Alerts Section - Enhanced */}
+        <motion.div
+          className="lg:col-span-2 bg-white rounded-2xl shadow-md border border-gray-100 overflow-hidden"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.5 }}
+        >
+          <div className="flex justify-between items-center p-5 border-b bg-gray-50/50">
+            <h3 className="font-semibold text-gray-700 flex items-center gap-2">
+              <FiAlertCircle className="text-amber-500" /> Recent Alerts
+              {stats.unreadAlerts > 0 && (
+                <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full">
+                  {stats.unreadAlerts} new
+                </span>
+              )}
+            </h3>
+            <motion.button
+              onClick={() => navigate('/app/alerts')}
+              className="text-blue-500 text-sm font-medium hover:underline"
+              whileHover={{ scale: 1.02 }}
+            >
+              View all →
+            </motion.button>
           </div>
-        ) : (
-          <div className="divide-y divide-gray-50">
-            {stats?.recentAlerts?.slice(0, 5).map(alert => (
-              <div key={alert._id} className="px-5 py-3 flex items-center gap-3 hover:bg-gray-50 transition-colors">
-                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                  alert.severity === 'high' ? 'bg-red-500' :
-                  alert.severity === 'medium' ? 'bg-yellow-500' : 'bg-blue-500'
-                }`} />
 
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <div className="w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center text-xs font-medium text-gray-600">
-                    {alert.employee?.name?.charAt(0)}
-                  </div>
-                </div>
-
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-gray-800 truncate">{alert.message}</p>
-                  <p className="text-xs text-gray-400">
-                    {new Date(alert.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
-                  </p>
-                </div>
-
-                <button
-                  onClick={() => markRead(alert._id)}
-                  className="text-xs text-gray-400 hover:text-blue-600 flex-shrink-0"
-                >
-                  Dismiss
-                </button>
+          <div ref={parent} className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
+            {stats.recentAlerts.length === 0 ? (
+              <div className="p-8 text-center text-gray-400 flex flex-col items-center gap-2">
+                <FiCheckCircle className="text-green-400 text-3xl" />
+                <p>All clear – no alerts</p>
               </div>
-            ))}
+            ) : (
+              <AnimatePresence>
+                {stats.recentAlerts.slice(0, 5).map(alert => (
+                  <motion.div
+                    key={alert._id}
+                    className="p-4 flex justify-between items-start hover:bg-gray-50 transition"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <div className="flex-1">
+                      <p className="text-gray-800 text-sm">{alert.message}</p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {new Date(alert.timestamp).toLocaleTimeString()}
+                      </p>
+                    </div>
+                    <motion.button
+                      onClick={() => markRead(alert._id)}
+                      className="text-blue-500 text-xs font-medium ml-4"
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                    >
+                      Dismiss
+                    </motion.button>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            )}
           </div>
-        )}
+        </motion.div>
       </div>
-    </div>
+    </motion.div>
   );
 }
