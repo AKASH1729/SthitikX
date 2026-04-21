@@ -38,6 +38,7 @@ const salaryRoutes = require('./routes/salaryRoutes');
 const superAdminRoutes = require('./routes/superAdminRoutes');
 const Fieldlocation = require('./routes/fieldRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
+const bulkLocationRoutes = require('./routes/bulkLocationRoutes');
 
 /* ================= APP INIT ================= */
 const app = express();
@@ -142,6 +143,7 @@ app.use('/api/timeline', timelineRoutes);
 app.use('/api/salary', salaryRoutes);
 
 app.use('/api/super-admin', superAdminRoutes);
+app.use("/bulk-location", bulkLocationRoutes);
 app.use("/api/field-locations", Fieldlocation);
 app.use("/api/payment", paymentRoutes);
 
