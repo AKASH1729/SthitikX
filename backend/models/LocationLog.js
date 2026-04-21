@@ -77,6 +77,15 @@ const locationLogSchema = new mongoose.Schema(
     },
 
     /* ==============================
+       📶 NETWORK QUALITY (NEW)
+    ============================== */
+    networkQuality: {
+      type: String,
+      enum: ['good', 'weak', 'none'],
+      default: 'good',
+    },
+
+    /* ==============================
        📍 GEOFENCE + ATTENDANCE
     ============================== */
     isInsideGeofence: {

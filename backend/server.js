@@ -27,7 +27,7 @@ const locationRoutes = require('./routes/locations');
 const geofenceRoutes = require('./routes/geofences');
 
 const dashboardRoutes = require('./routes/dashboard');
-const liveDashboardRoutes = require('./routes/dashboardRoutes'); // ✅ FIX
+const liveDashboardRoutes = require('./routes/dashboardRoutes');
 
 const uploadRoutes = require('./routes/upload');
 const employeeDataRoutes = require('./routes/getEmployeeData');
@@ -35,9 +35,9 @@ const employeeDataRoutes = require('./routes/getEmployeeData');
 const timelineRoutes = require('./routes/timelineRoutes');
 const salaryRoutes = require('./routes/salaryRoutes');
 
-const superAdminRoutes = require('./routes/superAdminRoutes'); // ✅ NEW
-const Fieldlocation =require('./routes/fieldRoutes');
-const paymentRoutes = require('./routes/paymentRoutes'); // ✅ NEW
+const superAdminRoutes = require('./routes/superAdminRoutes');
+const Fieldlocation = require('./routes/fieldRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
 
 /* ================= APP INIT ================= */
 const app = express();
@@ -47,7 +47,7 @@ const server = http.createServer(app);
 app.use(cors({
   origin: [
     "http://localhost:3000",
-    "https://mahadevassociates.online",
+    "https://sthitix.online",
   ],
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   credentials: true,
@@ -58,7 +58,7 @@ const io = new Server(server, {
   cors: {
     origin: [
       "http://localhost:3000",
-      "https://mahadevassociates.online",
+      "https://sthitix.online",
     ],
     methods: ["GET", "POST"],
     credentials: true,
@@ -68,39 +68,47 @@ const io = new Server(server, {
   pingTimeout: 60000,
 });
 
-/* 🔥 SOCKET AUTH (VERY IMPORTANT) */
+/* 🔥 SOCKET AUTH */
 io.use((socket, next) => {
   try {
     const token = socket.handshake.auth?.token;
-
-    if (!token) {
-      return next(new Error("Unauthorized"));
-    }
-
+    if (!token) return next(new Error("Unauthorized"));
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     socket.userId = decoded.id;
-
     next();
-
   } catch (err) {
     next(new Error("Invalid token"));
   }
 });
 
-/* ================= SECURITY ================= */
+/* ================= SECURITY & RATE LIMITING ================= */
 app.use(helmet());
 
+// 🔥 HIGH LIMIT FOR LOCATION ROUTES (30 per minute) – MUST come before global limiter
+const locationLimiter = rateLimit({
+  windowMs: 60 * 1000,      // 1 minute
+  max: 30,                  // 30 requests per minute (allows 2 per 30 sec)
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Apply to exact location endpoints (these will NOT be caught by the global limiter)
+app.post('/api/locations/update', locationLimiter);
+app.get('/api/locations/live', locationLimiter);
+
+// 🔥 GLOBAL LIMITER (for all other /api/ routes)
 app.use('/api/', rateLimit({
   windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 900000),
   max: Number(process.env.RATE_LIMIT_MAX || 100),
 }));
 
+// Auth limiter (stricter)
 app.use('/api/auth/', rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
 }));
 
-/* ================= BODY ================= */
+/* ================= BODY PARSING ================= */
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -109,36 +117,35 @@ app.use(morgan('combined', {
   stream: { write: msg => logger.info(msg.trim()) }
 }));
 
-/* ================= SOCKET ATTACH ================= */
+/* ================= ATTACH SOCKET TO REQUEST ================= */
 app.use((req, res, next) => {
   req.io = io;
   next();
 });
 
 /* ================= ROUTES ================= */
-
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/v2/users', userRoutesV2);
 
 app.use('/api/attendance', attendanceRoutes);
-app.use('/api/locations', locationRoutes);
+app.use('/api/locations', locationRoutes);   // other location sub‑routes use global limiter
 app.use('/api/geofences', geofenceRoutes);
 
 app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/dashboards', liveDashboardRoutes); // ✅ FIXED
+app.use('/api/dashboards', liveDashboardRoutes);
 
-app.use('/api', uploadRoutes);             // ✅ FIXED
+app.use('/api', uploadRoutes);
 app.use('/api/employee-data', employeeDataRoutes);
 
 app.use('/api/timeline', timelineRoutes);
 app.use('/api/salary', salaryRoutes);
 
-app.use('/api/super-admin', superAdminRoutes);    // ✅ NEW
-app.use("/api/field-locations", Fieldlocation); 
-app.use("/api/payment", paymentRoutes); // ✅ NEW
+app.use('/api/super-admin', superAdminRoutes);
+app.use("/api/field-locations", Fieldlocation);
+app.use("/api/payment", paymentRoutes);
 
-/* ================= HEALTH ================= */
+/* ================= HEALTH CHECK ================= */
 app.get('/api/health', (req, res) => {
   res.json({
     success: true,
@@ -146,7 +153,7 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-/* ================= 404 ================= */
+/* ================= 404 HANDLER ================= */
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -154,11 +161,10 @@ app.use((req, res) => {
   });
 });
 
-/* ================= ERROR ================= */
+/* ================= GLOBAL ERROR HANDLER ================= */
 app.use((err, req, res, next) => {
   console.error(err);
   logger.error(err.message);
-
   res.status(500).json({
     success: false,
     message: err.message || 'Internal Server Error'
@@ -168,18 +174,15 @@ app.use((err, req, res, next) => {
 /* ================= SOCKET INIT ================= */
 initializeSocket(io);
 
-/* ================= START ================= */
+/* ================= START SERVER ================= */
 const startServer = async () => {
   try {
     await connectDB();
-
     const PORT = process.env.PORT || 5000;
     const HOST = process.env.HOST || '0.0.0.0';
-
     server.listen(PORT, HOST, () => {
       logger.info(`🚀 Server running at http://${HOST}:${PORT}`);
     });
-
   } catch (error) {
     logger.error(`❌ Server start failed: ${error.message}`);
     process.exit(1);

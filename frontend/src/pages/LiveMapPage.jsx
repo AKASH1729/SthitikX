@@ -37,8 +37,23 @@ const offlineIcon = new L.Icon({
   className: "offline-marker",
 });
 
+// 🔥 Weak network marker (yellow)
+const weakIcon = new L.Icon({
+  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  className: "weak-marker",
+});
+
 // Helper to format coordinates
 const formatCoord = (v) => (v == null ? "—" : Number(v).toFixed(5));
+
+// Helper to choose icon based on employee status and network quality
+const getIcon = (emp) => {
+  if (!emp.isTracking) return offlineIcon;
+  if (emp.networkQuality === "weak") return weakIcon;
+  return liveIcon;
+};
 
 export default function LiveMapPage() {
   const { socket, on, off } = useSocket();
@@ -118,6 +133,7 @@ export default function LiveMapPage() {
                 lastLocation: { lat: data.lat, lng: data.lng, timestamp: data.timestamp },
                 battery: data.battery ?? emp.battery,
                 speed: data.speed ?? 0,
+                networkQuality: data.networkQuality ?? emp.networkQuality,
                 isTracking: true,
                 isOnline: true,
               }
@@ -260,6 +276,9 @@ export default function LiveMapPage() {
                   )}
                   {!hasLocation && <span className="text-orange-400">No GPS</span>}
                   {emp.speed > 0 && <span className="text-gray-500">{emp.speed} km/h</span>}
+                  {emp.networkQuality === "weak" && (
+                    <span className="text-yellow-600">📶 weak signal</span>
+                  )}
                 </div>
               </div>
             );
@@ -301,7 +320,7 @@ export default function LiveMapPage() {
                 <Marker
                   key={emp._id}
                   position={[lat, lng]}
-                  icon={emp.isTracking ? liveIcon : offlineIcon}
+                  icon={getIcon(emp)}   // ✅ uses networkQuality to choose icon
                   eventHandlers={{ click: () => handleSelect(emp) }}
                 >
                   <Popup>
@@ -310,6 +329,7 @@ export default function LiveMapPage() {
                       <p>ID: {emp.employeeId}</p>
                       <p>Location: {formatCoord(lat)}, {formatCoord(lng)}</p>
                       <p>Battery: {emp.battery ?? "N/A"}%</p>
+                      <p>Network: {emp.networkQuality === "weak" ? "⚠️ Weak signal" : (emp.isTracking ? "Good" : "Offline")}</p>
                       <p>Status: {emp.isTracking ? "Live" : "Offline"}</p>
                     </div>
                   </Popup>
@@ -350,6 +370,7 @@ export default function LiveMapPage() {
               <p>Location: {formatCoord(selected.lastLocation?.lat)}, {formatCoord(selected.lastLocation?.lng)}</p>
               <p>Battery: <span className={selected.battery < 20 ? "text-red-500 font-bold" : ""}>{selected.battery ?? "N/A"}%</span></p>
               <p>Speed: {selected.speed ? `${selected.speed} km/h` : "—"}</p>
+              <p>Network: {selected.networkQuality === "weak" ? "⚠️ Weak signal" : (selected.isTracking ? "Good" : "Offline")}</p>
               <p>Route points: {pathLoading ? "Loading..." : (paths[selected.employeeId]?.length || 0)}</p>
               <p className={selected.isTracking ? "text-green-600 font-medium" : "text-red-500"}>
                 {selected.isTracking ? "Live tracking active" : "Offline"}
@@ -401,7 +422,11 @@ export default function LiveMapPage() {
           <p className="font-semibold text-gray-700">Legend</p>
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse" />
-            <span>Live tracking</span>
+            <span>Live (good network)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-2.5 h-2.5 rounded-full bg-yellow-500 animate-pulse" />
+            <span>Live (weak network)</span>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-gray-300" />
@@ -433,7 +458,10 @@ export default function LiveMapPage() {
         .offline-marker {
           filter: grayscale(0.5);
         }
+        .weak-marker {
+          filter: hue-rotate(60deg) brightness(1.1);
+        }
       `}</style>
     </div>
   );
-} 
+}

@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   backend:
     build:
@@ -9,10 +11,10 @@ services:
     env_file:
       - ./backend/.env
     volumes:
-      - ./backend/logs:/app/logs
       - ./backend/uploads:/app/uploads
     networks:
       - geotrack-network
+    command: sh -c "npm start"
 
   frontend:
     build:
@@ -28,6 +30,8 @@ services:
       - ./frontend/.env
     networks:
       - geotrack-network
+    depends_on:
+      - backend
 
 networks:
   geotrack-network:

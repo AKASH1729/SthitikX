@@ -1,10 +1,9 @@
 /**
- * Signup Page — FULLY FIXED VERSION 🚀
+ * Signup Page — FINAL FIXED VERSION 🚀
  */
 
 import React, { useState } from "react";
-import axios from "axios"; // ✅ use axios (NO AUTH)
-import api from "../services/api"; // only for protected routes
+import api from "../services/api"; // ✅ ONLY use api instance
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 /* ================= LOAD RAZORPAY ================= */
@@ -30,7 +29,7 @@ export default function SignupPage() {
     pro: { name: "Starter", price: "₹999" },
     business: { name: "Growth", price: "₹1999" },
     premium: { name: "Scale", price: "₹2999" },
-    enterprise: { name: "Custom", price: "₹6999" }, // ✅ renamed
+    enterprise: { name: "Custom", price: "₹6999" },
   };
 
   const currentPlan = planDetails[plan] || planDetails.trial;
@@ -72,38 +71,36 @@ export default function SignupPage() {
         return navigate("/login");
       }
 
-      /* 💰 PAID FLOW (NO TOKEN HERE) */
+      /* 🔥 LOAD RAZORPAY */
       const loaded = await loadRazorpay();
-
       if (!loaded) {
         return setError("Razorpay SDK failed to load");
       }
 
-      /* 🔥 CREATE ORDER (PUBLIC API) */
-      const { data } = await axios.post(
-        `${process.env.REACT_APP_API_URL}/payment/order`,
-        { plan }
-      );
+      /* ✅ CREATE ORDER (FIXED) */
+      const { data } = await api.post("/payment/order", { plan });
 
+      if (!data?.order?.id) {
+        throw new Error("Order creation failed");
+      }
+
+      /* 🔥 RAZORPAY OPTIONS */
       const options = {
         key: process.env.REACT_APP_RAZORPAY_KEY,
         amount: data.order.amount,
         currency: "INR",
-        name: "TrackFlow SaaS",
+        name: "SthitiX",
         description: `${currentPlan.name} Plan`,
         order_id: data.order.id,
 
         handler: async function (response) {
           try {
-            /* 🔥 VERIFY PAYMENT (PUBLIC API) */
-            await axios.post(
-              `${process.env.REACT_APP_API_URL}/payment/verify`,
-              {
-                ...response,
-                ...form,
-                plan,
-              }
-            );
+            /* ✅ VERIFY PAYMENT (FIXED) */
+            await api.post("/payment/verify", {
+              ...response,
+              ...form,
+              plan,
+            });
 
             alert("🎉 Payment successful & company created!");
             navigate("/login");
@@ -125,7 +122,7 @@ export default function SignupPage() {
 
       const rzp = new window.Razorpay(options);
 
-      rzp.on("payment.failed", function () {
+      rzp.on("payment.failed", () => {
         alert("❌ Payment failed");
       });
 
@@ -191,7 +188,7 @@ export default function SignupPage() {
         <input
           type="password"
           placeholder="Password"
-          autoComplete="new-password" // ✅ fix warning
+          autoComplete="new-password"
           className="input w-full"
           onChange={(e) =>
             setForm({ ...form, password: e.target.value })

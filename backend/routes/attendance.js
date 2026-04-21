@@ -20,7 +20,7 @@ const router = express.Router();
 🔐 GLOBAL PROTECTION
 ========================= */
 router.use(protect);
-router.use(protect, checkPlan); 
+router.use(checkPlan); 
 
 /* =========================
    👤 EMPLOYEE ROUTES 

@@ -4,9 +4,15 @@ const Attendance = require("../models/Attendance");
 const User = require("../models/User");
 const Alert = require("../models/Alert");
 
-/* ================= DATE HELPER ================= */
+/* ================= DATE HELPER — IST AWARE ================= */
 const getToday = () => {
-  return new Date().toISOString().slice(0, 10); // 🔥 FIXED
+  // ✅ FIX: use IST (UTC+5:30) instead of UTC
+  // UTC date was causing "already clocked in" errors for Indian users
+  // between midnight IST and 5:30am IST (when UTC date is still yesterday)
+  const now = new Date();
+  const istOffset = 5.5 * 60 * 60 * 1000; // IST = UTC + 5:30
+  const istDate = new Date(now.getTime() + istOffset);
+  return istDate.toISOString().slice(0, 10);
 };
 
 /* =========================================
@@ -14,13 +20,26 @@ const getToday = () => {
 ========================================= */
 const clockIn = async (req, res) => {
   try {
+    /* ✅ DEBUG LOG — remove after confirming clock-in works */
+    console.log("🔍 CLOCK-IN HIT:", {
+      userId: req.user?._id,
+      role: req.user?.role,
+      companyId: req.user?.companyId,
+      body: req.body,
+    });
+
     const { lat, lng, address, battery } = req.body;
-    
+
     if (!req.user || !req.user._id) {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
 
-    if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) {
+    /* ✅ FIX: parse to Number first — body values can come in as strings */
+    const latNum = Number(lat);
+    const lngNum = Number(lng);
+
+    if (lat == null || lng == null || isNaN(latNum) || isNaN(lngNum)) {
+      console.log("❌ Invalid lat/lng:", { lat, lng });
       return res.status(400).json({
         success: false,
         message: "Valid latitude & longitude required",
@@ -28,6 +47,7 @@ const clockIn = async (req, res) => {
     }
 
     const today = getToday();
+    console.log("📅 Today (IST):", today);
 
     const existing = await Attendance.findOne({
       employee: req.user._id,
@@ -36,6 +56,7 @@ const clockIn = async (req, res) => {
     });
 
     if (existing?.clockIn?.timestamp) {
+      console.log("⚠️ Already clocked in today");
       return res.status(400).json({
         success: false,
         message: "Already clocked in today",
@@ -52,10 +73,12 @@ const clockIn = async (req, res) => {
 
     if (user?.assignedGeofence) {
       try {
-        const result = user.assignedGeofence.containsPoint(lat, lng);
+        const result = user.assignedGeofence.containsPoint(latNum, lngNum);
         isWithinGeofence = result?.isInside ?? true;
         geofenceId = user.assignedGeofence._id;
-      } catch {}
+      } catch (geoErr) {
+        console.log("⚠️ Geofence check failed (ignored):", geoErr.message);
+      }
     }
 
     if (user?.assignedGeofence && !isWithinGeofence) {
@@ -64,7 +87,7 @@ const clockIn = async (req, res) => {
         companyId: req.user.companyId,
         type: "geofence-violation",
         message: "Outside allowed area",
-        location: { lat, lng },
+        location: { lat: latNum, lng: lngNum },
         severity: "high",
       });
     }
@@ -75,7 +98,7 @@ const clockIn = async (req, res) => {
       date: today,
       clockIn: {
         timestamp: new Date(),
-        location: { lat: Number(lat), lng: Number(lng), address },
+        location: { lat: latNum, lng: lngNum, address },
         isWithinGeofence,
       },
       battery: battery ?? null,
@@ -87,12 +110,14 @@ const clockIn = async (req, res) => {
       {
         isTracking: true,
         lastLocation: {
-          lat: Number(lat),
-          lng: Number(lng),
+          lat: latNum,
+          lng: lngNum,
           timestamp: new Date(),
         },
       }
     );
+
+    console.log("✅ Clock-in saved:", attendance._id);
 
     res.status(201).json({
       success: true,
@@ -101,7 +126,7 @@ const clockIn = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("CLOCK-IN ERROR:", error);
+    console.error("❌ CLOCK-IN ERROR:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -111,9 +136,13 @@ const clockIn = async (req, res) => {
 ========================================= */
 const clockOut = async (req, res) => {
   try {
-    const userId = req.user?._id || req.body.userId;
+    console.log("🔍 CLOCK-OUT HIT:", {
+      userId: req.user?._id,
+      body: req.body,
+    });
 
-    const today = new Date().toISOString().slice(0, 10);
+    const userId = req.user?._id || req.body.userId;
+    const today = getToday(); // ✅ also IST-aware now
 
     const attendance = await Attendance.findOne({
       employee: userId,
@@ -121,17 +150,22 @@ const clockOut = async (req, res) => {
     });
 
     if (!attendance) {
+      console.log("⚠️ No attendance record found for today");
       return res.status(200).json({ success: true });
     }
 
-    // 🔥 already clocked out → ignore
     if (attendance.clockOut?.timestamp) {
+      console.log("⚠️ Already clocked out");
       return res.status(200).json({ success: true });
     }
+
+    /* ✅ Save clock-out location if provided */
+    const lat = req.body.lat ? Number(req.body.lat) : null;
+    const lng = req.body.lng ? Number(req.body.lng) : null;
 
     attendance.clockOut = {
       timestamp: new Date(),
-      location: null,
+      location: lat && lng ? { lat, lng } : null,
     };
 
     attendance.calculateHours();
@@ -142,10 +176,13 @@ const clockOut = async (req, res) => {
       { isTracking: false }
     );
 
+    console.log("✅ Clock-out saved");
+
     res.json({ success: true });
 
   } catch (err) {
-    res.status(200).json({ success: true }); // 🔥 never fail
+    console.error("❌ CLOCK-OUT ERROR:", err.message);
+    res.status(200).json({ success: true }); // never fail clock-out
   }
 };
 
@@ -154,7 +191,7 @@ const clockOut = async (req, res) => {
 ========================================= */
 const getTodayAttendance = async (req, res) => {
   try {
-    const today = getToday();
+    const today = getToday(); // ✅ IST-aware
 
     const attendance = await Attendance.findOne({
       employee: req.user._id,
@@ -165,6 +202,7 @@ const getTodayAttendance = async (req, res) => {
     res.json({ success: true, attendance });
 
   } catch (error) {
+    console.error("❌ GET TODAY ERROR:", error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -212,6 +250,7 @@ const getAttendance = async (req, res) => {
     });
 
   } catch (error) {
+    console.error("❌ GET ATTENDANCE ERROR:", error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };

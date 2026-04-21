@@ -1,11 +1,9 @@
 /**
- * Super Admin Dashboard — WITH COUNTDOWN 🚀
+ * Super Admin Dashboard — FINAL FIXED 🚀
  */
 
 import React, { useEffect, useState } from "react";
-import axios from "axios";
-
-const API = `${process.env.REACT_APP_API_URL}/super-admin`;
+import api from "../services/api"; // ✅ ONLY API INSTANCE
 
 /* ================= HELPER ================= */
 const getDaysLeft = (date) => {
@@ -24,18 +22,17 @@ export default function SuperAdminDashboard() {
   const [companies, setCompanies] = useState([]);
   const [fetching, setFetching] = useState(false);
 
-  const token = localStorage.getItem("token");
-
   /* ================= FETCH ================= */
   const fetchCompanies = async () => {
     try {
       setFetching(true);
 
-      const res = await axios.get(`${API}/companies`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      // ✅ FIXED (no axios, no env)
+      const res = await api.get("/super-admin/companies");
 
       setCompanies(res.data.companies || []);
+    } catch (err) {
+      console.error(err);
     } finally {
       setFetching(false);
     }
@@ -47,10 +44,9 @@ export default function SuperAdminDashboard() {
 
   /* ================= STATS ================= */
   const total = companies.length;
-  const free = companies.filter(c => c.plan === "trial").length;
-  const paid = companies.filter(c => c.plan !== "trial").length;
+  const free = companies.filter((c) => c.plan === "trial").length;
+  const paid = companies.filter((c) => c.plan !== "trial").length;
 
-  /* ================= GRAPH ================= */
   const planStats = [
     { label: "Free", value: free, color: "bg-yellow-400" },
     { label: "Paid", value: paid, color: "bg-green-500" },
@@ -86,7 +82,7 @@ export default function SuperAdminDashboard() {
                   style={{
                     width: `${(p.value / total) * 100 || 0}%`,
                   }}
-                ></div>
+                />
               </div>
             </div>
           ))}
@@ -107,7 +103,7 @@ export default function SuperAdminDashboard() {
                 <th>Email</th>
                 <th>Plan</th>
                 <th>Status</th>
-                <th>⏳ Days Left</th> {/* 🔥 NEW */}
+                <th>⏳ Days Left</th>
               </tr>
             </thead>
 
@@ -120,11 +116,9 @@ export default function SuperAdminDashboard() {
 
                 return (
                   <tr key={c._id} className="border-b hover:bg-gray-50">
-
                     <td className="py-3 font-medium">{c.name}</td>
                     <td>{c.email}</td>
 
-                    {/* PLAN */}
                     <td>
                       <span className={`px-2 py-1 text-xs rounded ${
                         c.plan === "trial"
@@ -135,7 +129,6 @@ export default function SuperAdminDashboard() {
                       </span>
                     </td>
 
-                    {/* STATUS */}
                     <td>
                       <span className={`px-2 py-1 text-xs rounded ${
                         c.isActive
@@ -146,7 +139,6 @@ export default function SuperAdminDashboard() {
                       </span>
                     </td>
 
-                    {/* 🔥 COUNTDOWN */}
                     <td>
                       <span className={`text-xs px-2 py-1 rounded ${
                         getDaysLeft(expiry) === "Expired"
@@ -156,7 +148,6 @@ export default function SuperAdminDashboard() {
                         {getDaysLeft(expiry)}
                       </span>
                     </td>
-
                   </tr>
                 );
               })}
@@ -169,8 +160,7 @@ export default function SuperAdminDashboard() {
   );
 }
 
-/* ================= COMPONENT ================= */
-
+/* ================= CARD ================= */
 const Card = ({ title, value }) => (
   <div className="bg-white p-4 rounded-xl shadow">
     <p className="text-gray-500 text-sm">{title}</p>

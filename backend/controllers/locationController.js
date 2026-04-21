@@ -1,5 +1,6 @@
 /**
- * LOCATION CONTROLLER (REAL-TIME + OFFLINE SYNC 🔥)
+ * LOCATION CONTROLLER (REAL-TIME + OFFLINE SYNC + NETWORK QUALITY)
+ * No auto‑clockout – you can implement it elsewhere if needed.
  */
 
 const User = require("../models/User");
@@ -17,9 +18,11 @@ const updateLocation = async (req, res) => {
       speed = 0,
       accuracy = null,
       deviceId,
-      syncId
+      syncId,
+      networkQuality = "good",   // optional, from client
     } = req.body;
 
+    // Authentication & validation
     if (!req.user || !req.user._id) {
       return res.status(401).json({
         success: false,
@@ -27,10 +30,7 @@ const updateLocation = async (req, res) => {
       });
     }
 
-    if (
-      lat == null || lng == null ||
-      isNaN(lat) || isNaN(lng)
-    ) {
+    if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) {
       return res.status(400).json({
         success: false,
         message: "Valid latitude & longitude required",
@@ -47,9 +47,7 @@ const updateLocation = async (req, res) => {
     const now = new Date();
     const today = now.toISOString().split("T")[0];
 
-    /* =========================
-       UPDATE USER LIVE DATA
-    ========================= */
+    // 1️⃣ Update User's live data
     await User.findOneAndUpdate(
       {
         _id: req.user._id,
@@ -63,41 +61,36 @@ const updateLocation = async (req, res) => {
         },
         battery,
         isTracking: true,
+        networkQuality,
       }
     );
 
-    /* =========================
-       SAVE LOCATION (DUP SAFE)
-    ========================= */
+    // 2️⃣ Save location log (duplicate safe via syncId unique index)
     try {
       await LocationLog.create({
         employee: req.user._id,
         employeeId: req.user.employeeId,
         companyId: req.user.companyId,
-
         deviceId,
         syncId,
-
         location: {
           type: "Point",
           coordinates: [Number(lng), Number(lat)],
         },
-
         lat: Number(lat),
         lng: Number(lng),
         speed,
         accuracy,
         date: today,
         timestamp: now,
+        networkQuality,
       });
     } catch (err) {
-      // 🔥 Ignore duplicate
+      // Ignore duplicate syncId errors
       if (err.code !== 11000) throw err;
     }
 
-    /* =========================
-       SOCKET UPDATE
-    ========================= */
+    // 3️⃣ Emit real‑time event via WebSocket
     if (req.io) {
       req.io.to(`company_${req.user.companyId}`).emit("location:update", {
         employeeId: req.user.employeeId,
@@ -105,6 +98,7 @@ const updateLocation = async (req, res) => {
         lng,
         battery,
         speed,
+        networkQuality,
         timestamp: now,
       });
     }
@@ -113,10 +107,8 @@ const updateLocation = async (req, res) => {
       success: true,
       message: "Location updated (real-time)",
     });
-
   } catch (error) {
     console.error("❌ LOCATION UPDATE ERROR:", error);
-
     return res.status(500).json({
       success: false,
       message: error.message,
@@ -137,7 +129,6 @@ const syncLocations = async (req, res) => {
     }
 
     const locations = req.body;
-
     if (!Array.isArray(locations)) {
       return res.status(400).json({
         success: false,
@@ -146,48 +137,60 @@ const syncLocations = async (req, res) => {
     }
 
     const now = new Date();
-
     const formatted = locations.map((data) => ({
       employee: req.user._id,
       employeeId: req.user.employeeId,
       companyId: req.user.companyId,
-
       deviceId: data.deviceId,
       syncId: data.syncId,
-
       location: {
         type: "Point",
         coordinates: [Number(data.lng), Number(data.lat)],
       },
-
       lat: Number(data.lat),
       lng: Number(data.lng),
       speed: data.speed || 0,
       accuracy: data.accuracy || null,
       date: data.date || now.toISOString().split("T")[0],
       timestamp: data.timestamp || now,
+      networkQuality: data.networkQuality || "good",
     }));
 
-    // 🔥 BULK INSERT (FAST + DUP SAFE)
+    // Bulk insert with duplicate skipping
     await LocationLog.insertMany(formatted, { ordered: false });
+
+    // Also update the user's lastLocation to the most recent log in the batch
+    const lastItem = formatted.reduce((latest, item) =>
+      new Date(item.timestamp) > new Date(latest.timestamp) ? item : latest
+    );
+    await User.findOneAndUpdate(
+      { _id: req.user._id, companyId: req.user.companyId },
+      {
+        lastLocation: {
+          lat: lastItem.lat,
+          lng: lastItem.lng,
+          timestamp: lastItem.timestamp,
+        },
+        battery: lastItem.battery,
+        isTracking: true,
+        networkQuality: lastItem.networkQuality,
+      }
+    );
 
     return res.status(200).json({
       success: true,
       message: "Offline sync completed",
       count: formatted.length,
     });
-
   } catch (error) {
     console.error("❌ SYNC ERROR:", error);
-
-    // 🔥 ignore duplicates
     if (error.writeErrors) {
+      // Some items were duplicates – still a success
       return res.status(200).json({
         success: true,
         message: "Partial sync (duplicates skipped)",
       });
     }
-
     return res.status(500).json({
       success: false,
       message: error.message,
@@ -196,7 +199,7 @@ const syncLocations = async (req, res) => {
 };
 
 /* =========================================
-   📡 GET LIVE LOCATIONS
+   📡 GET LIVE LOCATIONS (WITH LOG FALLBACK)
 ========================================= */
 const getLiveLocations = async (req, res) => {
   try {
@@ -204,30 +207,67 @@ const getLiveLocations = async (req, res) => {
       role: "employee",
       isActive: true,
       companyId: req.user.companyId,
-    }).select("name employeeId lastLocation battery");
+    }).select("name employeeId lastLocation battery networkQuality _id");
 
     const now = new Date();
+    const twoMinutesAgo = new Date(now - 120000);
+    const updatedEmployees = [];
 
-    const updatedEmployees = employees.map((emp) => {
-      const last = emp.lastLocation?.timestamp;
+    for (const emp of employees) {
+      let isOnline = false;
+      let lastLocation = emp.lastLocation;
+      let battery = emp.battery;
+      let networkQuality = emp.networkQuality || "good";
 
-      const isOnline =
-        last && (now - new Date(last)) < 120000;
+      // 1. Check if User.lastLocation is recent
+      if (lastLocation?.timestamp && new Date(lastLocation.timestamp) > twoMinutesAgo) {
+        isOnline = true;
+      } else {
+        // 2. Fallback: get the most recent location log
+        const latestLog = await LocationLog.findOne({ employeeId: emp.employeeId })
+          .sort({ timestamp: -1 })
+          .limit(1);
+        if (latestLog && new Date(latestLog.timestamp) > twoMinutesAgo) {
+          isOnline = true;
+          lastLocation = {
+            lat: latestLog.lat,
+            lng: latestLog.lng,
+            timestamp: latestLog.timestamp,
+          };
+          battery = latestLog.battery;
+          networkQuality = latestLog.networkQuality || "good";
 
-      return {
-        ...emp.toObject(),
-        isOnline: !!isOnline,
-      };
-    });
+          // Sync back to User for future queries (optional)
+          await User.updateOne(
+            { _id: emp._id },
+            {
+              lastLocation,
+              battery,
+              isTracking: true,
+              networkQuality,
+            }
+          ).catch(err => console.error("User sync failed:", err.message));
+        }
+      }
+
+      updatedEmployees.push({
+        _id: emp._id,
+        name: emp.name,
+        employeeId: emp.employeeId,
+        lastLocation,
+        battery,
+        networkQuality,
+        isTracking: isOnline,
+        isOnline,
+      });
+    }
 
     res.json({
       success: true,
       employees: updatedEmployees,
     });
-
   } catch (error) {
     console.error("❌ LIVE LOCATION ERROR:", error);
-
     res.status(500).json({
       success: false,
       message: error.message,
@@ -249,6 +289,7 @@ const getRouteHistory = async (req, res) => {
       });
     }
 
+    // Security: ensure employee belongs to the same company
     const isValid = await LocationLog.exists({
       employeeId,
       companyId: req.user.companyId,
@@ -272,10 +313,8 @@ const getRouteHistory = async (req, res) => {
       success: true,
       logs,
     });
-
   } catch (error) {
     console.error("❌ ROUTE HISTORY ERROR:", error);
-
     return res.status(500).json({
       success: false,
       message: error.message,
@@ -288,7 +327,7 @@ const getRouteHistory = async (req, res) => {
 ========================================= */
 module.exports = {
   updateLocation,
-  syncLocations, // 🔥 NEW
+  syncLocations,
   getLiveLocations,
   getRouteHistory,
 };
