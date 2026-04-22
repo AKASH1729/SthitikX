@@ -2,7 +2,6 @@ const express = require("express");
 const multer = require("multer");
 const xlsx = require("xlsx");
 const fs = require("fs");
-const path = require("path");
 
 const EmployeeData = require("../models/EmployeeData");
 const User = require("../models/User");
@@ -16,11 +15,7 @@ const router = express.Router();
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     const dir = "uploads/";
-
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir);
-    }
-
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir);
     cb(null, dir);
   },
   filename: function (req, file, cb) {
@@ -28,26 +23,29 @@ const storage = multer.diskStorage({
   },
 });
 
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
 
 /* ==============================
-   ✅ GET EMPLOYEES (MULTI-TENANT SAFE)
+   ✅ GET EMPLOYEES
 ============================== */
 router.get("/users", protect, async (req, res) => {
   try {
     const users = await User.find({
       role: "employee",
-      companyId: req.user.companyId, // ✅ FIX
+      companyId: req.user.companyId,
     }).select("_id name employeeId email");
 
     res.json({ success: true, users });
-  } catch (err) {
+  } catch {
     res.status(500).json({ message: "Server error" });
   }
 });
 
 /* ==============================
-   ✅ UPLOAD EXCEL (FULL FIX)
+   ✅ UPLOAD EXCEL (FINAL)
 ============================== */
 router.post(
   "/upload-excel",
@@ -60,57 +58,53 @@ router.post(
       }
 
       const loggedInUser = req.user;
-
       let userId;
 
-      if (loggedInUser.role === "admin") {
+      // ✅ FIXED ROLE
+      if (
+        loggedInUser.role === "admin" ||
+        loggedInUser.role === "super_admin"
+      ) {
         userId = req.body.userId;
-
         if (!userId) {
-          return res.status(400).json({
-            message: "Select employee",
-          });
+          return res.status(400).json({ message: "Select employee" });
         }
       } else {
         userId = loggedInUser._id;
       }
 
       const category = (req.body.category || "").toLowerCase();
-
       if (!category) {
-        return res.status(400).json({
-          message: "Category required",
-        });
+        return res.status(400).json({ message: "Category required" });
       }
 
       const userExists = await User.findById(userId);
-
       if (!userExists) {
-        return res.status(400).json({
-          message: "User not found",
-        });
+        return res.status(400).json({ message: "User not found" });
       }
 
-      /* 🔒 MULTI-TENANT SECURITY */
       if (
         userExists.companyId.toString() !==
         loggedInUser.companyId.toString()
       ) {
-        return res.status(403).json({
-          message: "Unauthorized",
-        });
+        return res.status(403).json({ message: "Unauthorized" });
       }
 
-      /* ===== READ EXCEL ===== */
+      /* ===== READ FILE ===== */
       const workbook = xlsx.readFile(req.file.path);
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const rows = xlsx.utils.sheet_to_json(sheet);
 
       if (!rows.length) {
-        return res.status(400).json({
-          message: "Empty file",
-        });
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ message: "Empty file" });
       }
+
+      /* ===== TTL LOGIC ===== */
+      const now = new Date();
+      const expiresAt = new Date(
+        now.getTime() + 10 * 24 * 60 * 60 * 1000
+      );
 
       /* ===== SAVE ===== */
       const saved = await EmployeeData.create({
@@ -119,7 +113,6 @@ router.post(
         user: userId,
         uploadedBy: loggedInUser._id,
 
-        // ✅ REQUIRED FIXES
         companyId: loggedInUser.companyId,
         fileSize: req.file.size,
         fileType: req.file.mimetype,
@@ -127,10 +120,16 @@ router.post(
         data: rows,
         fileName: req.file.filename,
         filePath: "uploads",
-        uploadedAt: new Date(),
+
+        uploadedAt: now,
+        expiresAt,
       });
 
+      // ✅ DELETE FILE AFTER USE
+      fs.unlink(req.file.path, () => {});
+
       res.json({
+        success: true,
         message: "Upload successful",
         count: rows.length,
         id: saved._id,
@@ -144,6 +143,7 @@ router.post(
       }
 
       res.status(500).json({
+        success: false,
         message: err.message,
       });
     }

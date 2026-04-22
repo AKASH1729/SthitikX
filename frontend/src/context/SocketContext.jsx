@@ -39,7 +39,7 @@ export const SocketProvider = ({ children }) => {
 
     /* ================= CREATE SOCKET ================= */
     const socket = io(
-      process.env.REACT_APP_SOCKET_URL || "https://mahadevassociates.online",
+      process.env.REACT_APP_SOCKET_URL || "https://sthitix.online",
       {
         autoConnect: false,
         transports: ["websocket"],

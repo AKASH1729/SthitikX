@@ -1,11 +1,6 @@
-/**
- * EmployeeData Model — ENTERPRISE SaaS VERSION 🔥
- */
-
 const mongoose = require("mongoose");
 
 const employeeDataSchema = new mongoose.Schema({
-
   /* ================= CORE ================= */
 
   employeeId: {
@@ -41,7 +36,6 @@ const employeeDataSchema = new mongoose.Schema({
     required: true,
     lowercase: true,
     trim: true,
-     // 🔥 controlled categories
   },
 
   /* ================= DATA ================= */
@@ -70,14 +64,7 @@ const employeeDataSchema = new mongoose.Schema({
   },
 
   fileType: {
-    type: String, // 🔥 NEW (pdf, image, etc)
-  },
-
-  /* ================= STATUS ================= */
-
-  isDeleted: {
-    type: Boolean,
-    default: false,
+    type: String,
   },
 
   /* ================= META ================= */
@@ -88,10 +75,16 @@ const employeeDataSchema = new mongoose.Schema({
     index: true,
   },
 
+  // ✅ TTL FIELD (AUTO DELETE)
+  expiresAt: {
+    type: Date,
+    required: true,
+    index: true,
+  },
+
 }, {
   timestamps: true,
 });
-
 
 /* =========================
    🔥 INDEXES
@@ -102,13 +95,10 @@ employeeDataSchema.index({ companyId: 1, user: 1 });
 employeeDataSchema.index({ companyId: 1, category: 1 });
 employeeDataSchema.index({ companyId: 1, uploadedAt: -1 });
 
-/* 🔥 SOFT DELETE INDEX */
-employeeDataSchema.index({ companyId: 1, isDeleted: 1 });
-
-/* 🔥 DUPLICATE CONTROL */
+// ✅ TTL INDEX (MOST IMPORTANT)
 employeeDataSchema.index(
-  { companyId: 1, employeeId: 1, fileName: 1 },
-  { unique: false }
+  { expiresAt: 1 },
+  { expireAfterSeconds: 0, name: "ttl_expire_employee_data" }
 );
 
-module.exports = mongoose.model("EmployeeData", employeeDataSchema);  
+module.exports = mongoose.model("EmployeeData", employeeDataSchema);
