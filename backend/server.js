@@ -143,7 +143,7 @@ app.use('/api/timeline', timelineRoutes);
 app.use('/api/salary', salaryRoutes);
 
 app.use('/api/super-admin', superAdminRoutes);
-app.use("/bulk-location", bulkLocationRoutes);
+app.use("/api/bulk-location", bulkLocationRoutes);
 app.use("/api/field-locations", Fieldlocation);
 app.use("/api/payment", paymentRoutes);
 
