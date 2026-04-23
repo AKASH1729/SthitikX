@@ -134,10 +134,37 @@ const allowSuperAdmin = (req, res, next) => {
    🏢 COMPANY FILTER (VERY IMPORTANT)
 ========================================= */
 const companyFilter = (req, res, next) => {
-  if (req.user?.role !== 'super_admin') {
+  try {
+    const headerCompanyId = req.headers["x-company-id"];
+
+    // ✅ Super admin can access any company
+    if (req.user?.role === "super_admin") {
+      req.companyId = headerCompanyId || null;
+      return next();
+    }
+
+    // ❌ If header exists but does not match user company → block
+    if (
+      headerCompanyId &&
+      headerCompanyId !== String(req.user.companyId)
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "Company mismatch",
+      });
+    }
+
+    // ✅ Normal users always use their own company
     req.companyId = req.user.companyId;
+
+    next();
+  } catch (err) {
+    console.error("Company filter error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
-  next();
 };
 
 /* =========================================
