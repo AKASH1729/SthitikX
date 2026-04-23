@@ -2,7 +2,7 @@ const Location = require("../models/bulkLocation");
 const User = require("../models/User");
 
 /* =========================================
-🔥 BULK SYNC (APK → SERVER)
+🔥 BULK SYNC (OPTIMIZED + FIXED)
 ========================================= */
 const syncLocations = async (req, res) => {
   try {
@@ -15,8 +15,11 @@ const syncLocations = async (req, res) => {
       });
     }
 
+    const companyId = String(req.user.companyId);
+    const now = new Date();
+
     const docs = batch
-      .filter(item => item.lat && item.lng)
+      .filter(item => item.lat && item.lng && item.employeeId)
       .map(item => {
         const lat = Number(item.lat);
         const lng = Number(item.lng);
@@ -24,7 +27,7 @@ const syncLocations = async (req, res) => {
         return {
           syncId: item.syncId,
           employeeId: item.employeeId,
-          companyId: String(req.user.companyId),
+          companyId,
 
           deviceId: item.deviceId,
 
@@ -41,10 +44,11 @@ const syncLocations = async (req, res) => {
           battery: item.battery ?? -1,
           networkQuality: item.networkQuality || "good",
 
-          timestamp: new Date(), // 🔥 SERVER TIME
+          timestamp: now, // 🔥 SAME TIME FOR ALL
         };
       });
 
+    /* 🔥 SAVE ROUTES */
     await Location.bulkWrite(
       docs.map(doc => ({
         updateOne: {
@@ -55,22 +59,28 @@ const syncLocations = async (req, res) => {
       }))
     );
 
-    /* 🔥 UPDATE USER LIVE STATUS */
-    for (const item of docs) {
-      await User.updateOne(
-        { employeeId: item.employeeId },
-        {
-          lastLocation: {
-            lat: item.lat,
-            lng: item.lng,
-            timestamp: item.timestamp,
-          },
-          battery: item.battery,
-          networkQuality: item.networkQuality,
-          // ⚠️ DO NOT change isTracking here
+    /* 🔥 FIX: UPDATE USERS IN BULK (FAST + ACCURATE) */
+    const userUpdates = docs.map(doc => ({
+      updateOne: {
+        filter: {
+          employeeId: doc.employeeId,
+          companyId,
+        },
+        update: {
+          $set: {
+            lastLocation: {
+              lat: doc.lat,
+              lng: doc.lng,
+              timestamp: now, // 🔥 CRITICAL FIX
+            },
+            battery: doc.battery,
+            networkQuality: doc.networkQuality,
+          }
         }
-      );
-    }
+      }
+    }));
+
+    await User.bulkWrite(userUpdates);
 
     console.log("✅ Locations synced:", docs.length);
 
@@ -87,7 +97,7 @@ const syncLocations = async (req, res) => {
 
 
 /* =========================================
-📡 LIVE LOCATIONS (FINAL FIX)
+📡 LIVE LOCATIONS (FIXED)
 ========================================= */
 const getLiveLocations = async (req, res) => {
   try {
@@ -100,7 +110,6 @@ const getLiveLocations = async (req, res) => {
 
     const companyId = req.user.companyId;
 
-    /* 🔥 GET USERS */
     const users = await User.find({
       companyId,
       role: "employee",
@@ -110,37 +119,31 @@ const getLiveLocations = async (req, res) => {
     );
 
     const now = Date.now();
-    const ONLINE_THRESHOLD = 10 * 60 * 1000; // 10 minutes
+
+    /* 🔥 MATCH FRONTEND (3 MINUTES) */
+    const ONLINE_THRESHOLD = 3 * 60 * 1000;
 
     const employees = users.map((emp) => {
-      let lastLocation = emp.lastLocation;
-      let battery = emp.battery;
-      let networkQuality = emp.networkQuality || "good";
-
       let isOnline = false;
 
-      /* 🔹 CHECK LAST LOCATION TIME */
-      if (lastLocation?.timestamp) {
-        const diff = now - new Date(lastLocation.timestamp).getTime();
+      if (emp.lastLocation?.timestamp) {
+        const diff = now - new Date(emp.lastLocation.timestamp).getTime();
         if (diff < ONLINE_THRESHOLD) {
           isOnline = true;
         }
       }
-
-      /* 🔥 FINAL FIX: RESPECT CLOCK-IN / CLOCK-OUT */
-      const isTracking = emp.isTracking && isOnline;
 
       return {
         _id: emp._id,
         name: emp.name,
         employeeId: emp.employeeId,
 
-        lastLocation,
-        battery,
-        networkQuality,
+        lastLocation: emp.lastLocation,
+        battery: emp.battery,
+        networkQuality: emp.networkQuality || "good",
 
         isOnline,
-        isTracking, // ✅ FINAL FIX
+        isTracking: emp.isTracking && isOnline, // 🔥 FINAL FIX
       };
     });
 
@@ -157,14 +160,13 @@ const getLiveLocations = async (req, res) => {
 
 
 /* =========================================
-🛣 ROUTE HISTORY
+🛣 ROUTE HISTORY (OK)
 ========================================= */
 const getRouteHistory = async (req, res) => {
   try {
     const { employeeId } = req.params;
     const { date } = req.query;
 
-    /* 🔥 FIX: IST → UTC RANGE */
     const start = new Date(`${date}T00:00:00+05:30`);
     const end = new Date(`${date}T23:59:59.999+05:30`);
 
@@ -177,15 +179,13 @@ const getRouteHistory = async (req, res) => {
       },
     }).sort({ timestamp: 1 });
 
-    const formatted = logs.map(l => ({
-      lat: l.lat,
-      lng: l.lng,
-      timestamp: l.timestamp,
-    }));
-
     res.json({
       success: true,
-      data: formatted,
+      data: logs.map(l => ({
+        lat: l.lat,
+        lng: l.lng,
+        timestamp: l.timestamp,
+      })),
     });
 
   } catch (err) {

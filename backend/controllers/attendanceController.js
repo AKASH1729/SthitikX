@@ -2,12 +2,12 @@ const Attendance = require("../models/Attendance");
 const User = require("../models/User");
 const Alert = require("../models/Alert");
 
-/* ================= DATE HELPER (IST) ================= */
+/* ================= DATE HELPER (IST SAFE) ================= */
 const getToday = () => {
   const now = new Date();
   const istOffset = 5.5 * 60 * 60 * 1000;
   const istDate = new Date(now.getTime() + istOffset);
-  return istDate.toISOString().slice(0, 10);
+  return istDate.toISOString().slice(0, 10); // YYYY-MM-DD
 };
 
 /* =========================================
@@ -33,6 +33,8 @@ const clockIn = async (req, res) => {
 
     const today = getToday();
 
+    console.log("📅 CLOCK-IN DATE:", today);
+
     const existing = await Attendance.findOne({
       employee: req.user._id,
       companyId: req.user.companyId,
@@ -46,32 +48,6 @@ const clockIn = async (req, res) => {
       });
     }
 
-    /* ===== GEOFENCE ===== */
-    let isWithinGeofence = true;
-    let geofenceId = null;
-
-    const user = await User.findById(req.user._id).populate("assignedGeofence");
-
-    if (user?.assignedGeofence) {
-      try {
-        const result = user.assignedGeofence.containsPoint(latNum, lngNum);
-        isWithinGeofence = result?.isInside ?? true;
-        geofenceId = user.assignedGeofence._id;
-      } catch {}
-    }
-
-    if (user?.assignedGeofence && !isWithinGeofence) {
-      await Alert.create({
-        employee: req.user._id,
-        companyId: req.user.companyId,
-        type: "geofence-violation",
-        message: "Outside allowed area",
-        location: { lat: latNum, lng: lngNum },
-        severity: "high",
-      });
-    }
-
-    /* ===== CREATE ATTENDANCE ===== */
     const attendance = await Attendance.create({
       employee: req.user._id,
       companyId: req.user.companyId,
@@ -79,53 +55,57 @@ const clockIn = async (req, res) => {
       clockIn: {
         timestamp: new Date(),
         location: { lat: latNum, lng: lngNum, address },
-        isWithinGeofence,
       },
       battery: battery ?? null,
-      geofence: geofenceId,
     });
 
-    /* ===== UPDATE USER (🔥 FIXED BATTERY + TIMESTAMP) ===== */
     await User.updateOne(
       { _id: req.user._id },
       {
         isTracking: true,
-        battery: battery ?? null,
         lastLocation: {
           lat: latNum,
           lng: lngNum,
-          timestamp: new Date(), // 🔥 important
+          timestamp: new Date(), // 🔥 IMPORTANT
         },
       }
     );
 
+    console.log("✅ Clock-in saved");
+
     res.status(201).json({
       success: true,
-      message: "Clocked in successfully",
       attendance,
     });
 
   } catch (error) {
-    console.error("CLOCK-IN ERROR:", error);
+    console.error("❌ CLOCK-IN ERROR:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
 /* =========================================
-   CLOCK OUT
+   CLOCK OUT (FIXED)
 ========================================= */
 const clockOut = async (req, res) => {
   try {
-    const userId = req.user?._id;
+    const userId = req.user._id;
     const today = getToday();
+
+    console.log("📅 CLOCK-OUT DATE:", today);
 
     const attendance = await Attendance.findOne({
       employee: userId,
-      companyId: req.user.companyId,
+      companyId: req.user.companyId, // 🔥 FIX
       date: today,
     });
 
-    if (!attendance || attendance.clockOut?.timestamp) {
+    if (!attendance) {
+      console.log("⚠️ No attendance found");
+      return res.json({ success: true });
+    }
+
+    if (attendance.clockOut?.timestamp) {
       return res.json({ success: true });
     }
 
@@ -142,15 +122,15 @@ const clockOut = async (req, res) => {
 
     await User.updateOne(
       { _id: userId },
-      {
-        isTracking: false,
-      }
+      { isTracking: false }
     );
+
+    console.log("✅ Clock-out saved");
 
     res.json({ success: true });
 
   } catch (err) {
-    console.error("CLOCK-OUT ERROR:", err);
+    console.error("❌ CLOCK-OUT ERROR:", err);
     res.json({ success: true });
   }
 };
@@ -166,18 +146,18 @@ const getTodayAttendance = async (req, res) => {
       employee: req.user._id,
       companyId: req.user.companyId,
       date: today,
-    }).populate("geofence", "name");
+    });
 
     res.json({ success: true, attendance });
 
   } catch (error) {
-    console.error("GET TODAY ERROR:", error);
+    console.error("❌ GET TODAY ERROR:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
 /* =========================================
-   GET ALL (FRONTEND READY)
+   GET ALL (FIXED FOR FRONTEND)
 ========================================= */
 const getAttendance = async (req, res) => {
   try {
@@ -194,18 +174,34 @@ const getAttendance = async (req, res) => {
     }
 
     if (date) {
-      query.date = date;
+      query.date = String(date).trim();
     }
 
     const records = await Attendance.find(query)
       .populate("employee", "name email employeeId")
       .populate("geofence", "name")
-      .sort({ date: -1, "clockIn.timestamp": 1 });
+      .sort({ date: -1, "clockIn.timestamp": 1 })
+      .lean();
 
-    // 🔥 IMPORTANT: match frontend expectation
+    /* 🔥 CREATE GROUPED DATA (FOR WEB) */
+    const grouped = {};
+
+    records.forEach((rec) => {
+      if (!grouped[rec.date]) {
+        grouped[rec.date] = [];
+      }
+      grouped[rec.date].push(rec);
+    });
+
+    /* 🔥 RETURN BOTH FORMATS */
     res.json({
       success: true,
-      records, // ✅ NOT "data"
+
+      // 📱 MOBILE (Flat)
+      records,
+
+      // 💻 WEB (Grouped)
+      data: grouped,
     });
 
   } catch (error) {

@@ -91,7 +91,7 @@ router.get("/live/:companyId", async (req, res) => {
     const companyId = String(req.params.companyId);
 
     const logs = await Location.aggregate([
-      { $match: { companyId } }, // 🔥 FIX
+      { $match: { companyId } },
       { $sort: { timestamp: -1 } },
       {
         $group: {
@@ -103,32 +103,46 @@ router.get("/live/:companyId", async (req, res) => {
 
     const now = Date.now();
 
+    /* 🔥 INCREASE BUFFER (VERY IMPORTANT) */
+    const ONLINE_THRESHOLD = 10 * 60 * 1000; // 10 min
+
     const employees = logs.map(l => {
       const log = l.doc;
 
-      const diff = now - new Date(log.timestamp).getTime();
+      const lastTime = new Date(log.timestamp).getTime();
+      const diff = now - lastTime;
+
+      const isOnline = diff < ONLINE_THRESHOLD;
 
       return {
         employeeId: log.employeeId,
+
         lastLocation: {
           lat: log.lat,
           lng: log.lng,
           timestamp: log.timestamp,
         },
+
         battery: log.battery,
         networkQuality: log.networkQuality,
-        isOnline: diff < 5 * 60 * 1000,
+
+        isOnline,
+
+        /* 🔥 IMPORTANT: ADD THIS */
+        isTracking: isOnline, // ✅ FIX
       };
     });
 
-    return res.json({ success: true, employees });
+    return res.json({
+      success: true,
+      employees,
+    });
 
   } catch (err) {
     console.error("❌ Live error:", err);
     res.status(500).json({ success: false });
   }
 });
-
 
 /* =========================================
    📍 GET LATEST LOCATION

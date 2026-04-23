@@ -1,14 +1,15 @@
 /**
  * SaaS Landing Page — ULTRA PREMIUM UI 🚀 with Enhanced Features
+ * Added "Download App" button to navbar
  */
 
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { FiCheck, FiArrowRight, FiClock, FiMapPin, FiBarChart2, FiShield, FiUsers } from "react-icons/fi";
+import { FiCheck, FiArrowRight, FiClock, FiMapPin, FiBarChart2, FiShield, FiUsers, FiDownload } from "react-icons/fi";
 import logo from "../assets/logo.jpeg";
 
-/* ================= NAVBAR ================= */
+/* ================= NAVBAR (with Download App button) ================= */
 function Navbar({ openPricing }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -19,7 +20,7 @@ function Navbar({ openPricing }) {
         animate={{ y: 0, opacity: 1 }}
         className="flex justify-between items-center px-6 md:px-10 py-5 bg-white/70 backdrop-blur-md shadow sticky top-0 z-50"
       >
-        {/* 🔥 LOGO + BRAND */}
+        {/* LOGO + BRAND */}
         <div className="flex items-center gap-3">
           <img src={logo} className="h-10 w-auto object-contain" alt="SthitiX Logo" />
           <h1 className="text-xl font-semibold tracking-wide">
@@ -46,6 +47,18 @@ function Navbar({ openPricing }) {
           >
             Get Started
           </motion.button>
+
+          {/* ✅ NEW: Download App button (desktop) */}
+          <motion.a
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            href="https://sthitix.s3.ap-south-1.amazonaws.com/application-9dda3d8f-3b18-4255-907c-e191e1591605.apk"
+            download
+            className="bg-gradient-to-r from-green-500 to-green-600 text-white px-5 py-2 rounded-lg shadow hover:shadow-md transition-all flex items-center gap-2"
+          >
+            <FiDownload size={18} />
+            Download App
+          </motion.a>
         </div>
 
         {/* MOBILE MENU BUTTON */}
@@ -88,6 +101,17 @@ function Navbar({ openPricing }) {
               >
                 Get Started
               </motion.button>
+
+              {/* ✅ NEW: Download App button (mobile) */}
+              <motion.a
+                whileTap={{ scale: 0.95 }}
+                href="https://sthitix.s3.ap-south-1.amazonaws.com/application-9dda3d8f-3b18-4255-907c-e191e1591605.apk"
+                download
+                className="bg-gradient-to-r from-green-500 to-green-600 text-white px-5 py-2 rounded-lg shadow flex items-center justify-center gap-2"
+              >
+                <FiDownload size={18} />
+                Download App
+              </motion.a>
             </div>
           </motion.div>
         )}
@@ -100,7 +124,6 @@ function Navbar({ openPricing }) {
 function Hero({ openPricing }) {
   return (
     <div className="text-center py-16 md:py-24 bg-gradient-to-br from-blue-50 via-white to-blue-100 px-4">
-      {/* LOGO */}
       <motion.img
         src={logo}
         initial={{ scale: 0.8, opacity: 0 }}
@@ -108,8 +131,6 @@ function Hero({ openPricing }) {
         className="h-16 md:h-20 mx-auto mb-6 drop-shadow-xl"
         alt="SthitiX Logo"
       />
-
-      {/* TITLE */}
       <motion.h1
         initial={{ opacity: 0, y: 40 }}
         animate={{ opacity: 1, y: 0 }}
@@ -118,7 +139,6 @@ function Hero({ openPricing }) {
         <span className="italic font-serif">Sthiti</span>
         <span className="text-blue-600 text-5xl md:text-6xl italic font-bold ml-2">X</span>
       </motion.h1>
-
       <motion.p
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
@@ -127,7 +147,6 @@ function Hero({ openPricing }) {
       >
         The ultimate workforce management solution with real-time tracking, automated attendance, and powerful analytics.
       </motion.p>
-
       <div className="flex flex-col sm:flex-row justify-center gap-4 mb-12">
         <motion.button
           whileHover={{ scale: 1.05 }}
@@ -146,8 +165,6 @@ function Hero({ openPricing }) {
           Watch Demo ▶
         </motion.button>
       </div>
-
-      {/* FEATURE HIGHLIGHTS */}
       <motion.div 
         className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-4xl mx-auto"
         initial={{ opacity: 0 }}
@@ -177,41 +194,25 @@ function Features() {
       title: "Live GPS Tracking",
       desc: "Monitor employee locations in real-time with precise GPS accuracy and geofencing capabilities.",
       icon: <FiMapPin className="text-blue-600" size={32} />,
-      benefits: [
-        "Real-time location updates",
-        "Geofence alerts",
-        "Route history"
-      ]
+      benefits: ["Real-time location updates", "Geofence alerts", "Route history"]
     },
     {
       title: "Smart Attendance",
       desc: "Automate attendance tracking with geofenced check-ins and AI-powered facial recognition.",
       icon: <FiClock className="text-blue-600" size={32} />,
-      benefits: [
-        "Automated check-in/out",
-        "Facial recognition",
-        "Tamper-proof records"
-      ]
+      benefits: ["Automated check-in/out", "Facial recognition", "Tamper-proof records"]
     },
     {
       title: "Analytics Dashboard",
       desc: "Gain powerful insights into workforce productivity with customizable reports and visualizations.",
       icon: <FiBarChart2 className="text-blue-600" size={32} />,
-      benefits: [
-        "Custom reports",
-        "Productivity metrics",
-        "Export to Excel"
-      ]
+      benefits: ["Custom reports", "Productivity metrics", "Export to Excel"]
     },
     {
       title: "Team Management",
       desc: "Easily organize your workforce with department structures and role-based permissions.",
       icon: <FiUsers className="text-blue-600" size={32} />,
-      benefits: [
-        "Department hierarchy",
-        "Role-based access",
-        "Bulk operations"
-      ]
+      benefits: ["Department hierarchy", "Role-based access", "Bulk operations"]
     }
   ];
 
@@ -225,11 +226,8 @@ function Features() {
           className="text-center mb-12"
         >
           <h2 className="text-3xl md:text-4xl font-bold mb-4">Powerful Features</h2>
-          <p className="text-gray-600 max-w-2xl mx-auto">
-            Everything you need to efficiently manage your distributed workforce
-          </p>
+          <p className="text-gray-600 max-w-2xl mx-auto">Everything you need to efficiently manage your distributed workforce</p>
         </motion.div>
-
         <div className="grid md:grid-cols-2 gap-8">
           {features.map((feature, index) => (
             <motion.div
@@ -242,9 +240,7 @@ function Features() {
               className="bg-white rounded-xl shadow-lg p-6 border border-gray-100 hover:shadow-xl transition-all"
             >
               <div className="flex items-start gap-4">
-                <div className="bg-blue-50 p-3 rounded-full">
-                  {feature.icon}
-                </div>
+                <div className="bg-blue-50 p-3 rounded-full">{feature.icon}</div>
                 <div>
                   <h3 className="font-bold text-xl mb-2">{feature.title}</h3>
                   <p className="text-gray-600 mb-4">{feature.desc}</p>
@@ -278,18 +274,14 @@ function DemoSection() {
           className="text-center mb-12"
         >
           <h2 className="text-3xl md:text-4xl font-bold mb-4">See It In Action</h2>
-          <p className="text-gray-600 max-w-2xl mx-auto">
-            Watch our 2-minute demo to see how SthitiX can transform your workforce management
-          </p>
+          <p className="text-gray-600 max-w-2xl mx-auto">Watch our 2-minute demo to see how SthitiX can transform your workforce management</p>
         </motion.div>
-
         <motion.div
           initial={{ opacity: 0, scale: 0.9 }}
           whileInView={{ opacity: 1, scale: 1 }}
           viewport={{ once: true }}
           className="aspect-video bg-gray-200 rounded-xl shadow-xl overflow-hidden relative"
         >
-          {/* Placeholder for video embed */}
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-center">
               <div className="w-20 h-20 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -315,7 +307,7 @@ function FAQ() {
     },
     {
       question: "Is there a mobile app for employees?",
-      answer: "Yes, we provide dedicated mobile apps for  Android that employees can use for clocking in/out and viewing their schedules."
+      answer: "Yes, we provide dedicated mobile apps for Android that employees can use for clocking in/out and viewing their schedules."
     },
     {
       question: "How secure is the employee location data?",
@@ -328,10 +320,7 @@ function FAQ() {
   ];
 
   const [activeIndex, setActiveIndex] = useState(null);
-
-  const toggleFAQ = (index) => {
-    setActiveIndex(activeIndex === index ? null : index);
-  };
+  const toggleFAQ = (index) => setActiveIndex(activeIndex === index ? null : index);
 
   return (
     <section id="faq" className="py-16 md:py-20 bg-gray-50 px-4">
@@ -343,11 +332,8 @@ function FAQ() {
           className="text-center mb-12"
         >
           <h2 className="text-3xl md:text-4xl font-bold mb-4">Frequently Asked Questions</h2>
-          <p className="text-gray-600 max-w-2xl mx-auto">
-            Everything you need to know about SthitiX
-          </p>
+          <p className="text-gray-600 max-w-2xl mx-auto">Everything you need to know about SthitiX</p>
         </motion.div>
-
         <div className="space-y-4">
           {faqs.map((faq, index) => (
             <motion.div
@@ -358,14 +344,9 @@ function FAQ() {
               transition={{ delay: index * 0.1 }}
               className="border border-gray-200 rounded-xl overflow-hidden"
             >
-              <button
-                onClick={() => toggleFAQ(index)}
-                className="w-full flex justify-between items-center p-6 bg-white hover:bg-gray-50 transition-colors"
-              >
+              <button onClick={() => toggleFAQ(index)} className="w-full flex justify-between items-center p-6 bg-white hover:bg-gray-50 transition-colors">
                 <h3 className="text-left font-medium text-lg">{faq.question}</h3>
-                <motion.div
-                  animate={{ rotate: activeIndex === index ? 90 : 0 }}
-                >
+                <motion.div animate={{ rotate: activeIndex === index ? 90 : 0 }}>
                   <FiArrowRight />
                 </motion.div>
               </button>
@@ -397,11 +378,7 @@ function CTA({ openPricing }) {
   return (
     <section className="py-16 md:py-20 bg-gradient-to-r from-blue-600 to-indigo-700 text-white px-4">
       <div className="max-w-4xl mx-auto text-center">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }}>
           <h2 className="text-3xl md:text-4xl font-bold mb-6">Ready to Transform Your Workforce Management?</h2>
           <p className="text-blue-100 mb-8 text-lg max-w-2xl mx-auto">
             Join thousands of businesses using SthitiX to streamline their operations and boost productivity.
@@ -415,14 +392,6 @@ function CTA({ openPricing }) {
             >
               Start Free Trial
             </motion.button>
-            {/* <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={() => window.location.href = "/contact"}
-              className="bg-transparent border-2 border-white text-white px-8 py-3 rounded-xl hover:bg-white/10 transition-all font-medium"
-            >
-            
-            </motion.button> */}
           </div>
         </motion.div>
       </div>
@@ -444,9 +413,7 @@ function Footer() {
                 <span className="text-blue-400 italic ml-1">X</span>
               </h1>
             </div>
-            <p className="text-gray-400 text-sm">
-              The complete workforce management solution for modern businesses.
-            </p>
+            <p className="text-gray-400 text-sm">The complete workforce management solution for modern businesses.</p>
           </div>
           <div>
             <h3 className="font-semibold mb-4">Product</h3>
@@ -487,53 +454,12 @@ function Footer() {
 /* ================= PRICING MODAL ================= */
 function PricingModal({ close }) {
   const navigate = useNavigate();
-
   const plans = [
-    { 
-      name: "Free Trial", 
-      price: "₹0", 
-      duration: "30 days",
-      features: ["50 employees", "Basic tracking", "Email support"],
-      cta: "Try for Free",
-      plan: "trial",
-      popular: false
-    },
-    { 
-      name: "Pro", 
-      price: "₹999", 
-      duration: "per month",
-      features: ["50 employees", "Advanced analytics", "Priority support", "Mobile apps"],
-      cta: "Get Started",
-      plan: "pro",
-      popular: false
-    },
-    { 
-      name: "Business", 
-      price: "₹1999", 
-      duration: "per month",
-      features: ["100 employees", "All Pro features", "Custom reports"],
-      cta: "Get Started",
-      plan: "business",
-      popular: true
-    },
-    { 
-      name: "Premium", 
-      price: "₹2999", 
-      duration: "per month",
-      features: ["200 employees", "Custom solutions", "24/7 support"],
-      cta: "Get Started",
-      plan: "premium",
-      popular: false
-    },
-    { 
-      name: "Enterprise", 
-      price: "₹6999", 
-      duration: "per month",
-      features: ["700 employees", "All Premium features", "Dedicated account manager", "SLA guarantee"],
-      cta: "Get Started",
-      plan: "enterprise",
-      popular: false
-    }
+    { name: "Free Trial", price: "₹0", duration: "30 days", features: ["50 employees", "Basic tracking", "Email support"], cta: "Try for Free", plan: "trial", popular: false },
+    { name: "Pro", price: "₹999", duration: "per month", features: ["50 employees", "Advanced analytics", "Priority support", "Mobile apps"], cta: "Get Started", plan: "pro", popular: false },
+    { name: "Business", price: "₹1999", duration: "per month", features: ["100 employees", "All Pro features", "Custom reports"], cta: "Get Started", plan: "business", popular: true },
+    { name: "Premium", price: "₹2999", duration: "per month", features: ["200 employees", "Custom solutions", "24/7 support"], cta: "Get Started", plan: "premium", popular: false },
+    { name: "Enterprise", price: "₹6999", duration: "per month", features: ["700 employees", "All Premium features", "Dedicated account manager", "SLA guarantee"], cta: "Get Started", plan: "enterprise", popular: false }
   ];
 
   return (
@@ -546,14 +472,8 @@ function PricingModal({ close }) {
       >
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-2xl font-bold">Choose Your Plan</h2>
-          <button 
-            onClick={close}
-            className="text-gray-500 hover:text-gray-700"
-          >
-            ✖
-          </button>
+          <button onClick={close} className="text-gray-500 hover:text-gray-700">✖</button>
         </div>
-
         <div className="grid md:grid-cols-5 gap-4">
           {plans.map((plan, index) => (
             <motion.div
@@ -561,17 +481,12 @@ function PricingModal({ close }) {
               whileHover={{ y: -5 }}
               className={`p-5 border rounded-xl shadow relative ${plan.popular ? 'border-blue-500 ring-2 ring-blue-200' : 'border-gray-200'}`}
             >
-              {plan.popular && (
-                <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-blue-500 text-white text-xs font-bold px-3 py-1 rounded-full">
-                  POPULAR
-                </div>
-              )}
+              {plan.popular && <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-blue-500 text-white text-xs font-bold px-3 py-1 rounded-full">POPULAR</div>}
               <h3 className="font-bold text-lg mb-1">{plan.name}</h3>
               <div className="flex items-end mb-2">
                 <span className="text-2xl font-bold text-blue-600">{plan.price}</span>
                 {plan.duration && <span className="text-gray-500 text-sm ml-1">{plan.duration}</span>}
               </div>
-              
               <ul className="space-y-2 my-4">
                 {plan.features.map((feature, i) => (
                   <li key={i} className="flex items-start gap-2">
@@ -580,14 +495,10 @@ function PricingModal({ close }) {
                   </li>
                 ))}
               </ul>
-
               <motion.button
                 whileHover={{ scale: 1.03 }}
                 whileTap={{ scale: 0.97 }}
-                onClick={() => {
-                  // All plans now go to signup with payment flow
-                  navigate(`/signup?plan=${plan.plan}`);
-                }}
+                onClick={() => navigate(`/signup?plan=${plan.plan}`)}
                 className={`w-full mt-4 py-2 rounded font-medium ${plan.popular ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-800 hover:bg-gray-200'}`}
               >
                 {plan.cta}
@@ -595,7 +506,6 @@ function PricingModal({ close }) {
             </motion.div>
           ))}
         </div>
-
         <div className="mt-8 text-center text-gray-600">
           <p>Need help choosing? <a href="/contact" className="text-blue-600 hover:underline">Contact our sales team</a></p>
         </div>
@@ -611,23 +521,14 @@ export default function LandingPage() {
   return (
     <div className="min-h-screen bg-gray-50">
       <Navbar openPricing={() => setShowPricing(true)} />
-
       <Hero openPricing={() => setShowPricing(true)} />
-
       <Features />
-
       <DemoSection />
-
       <FAQ />
-
       <CTA openPricing={() => setShowPricing(true)} />
-
       <Footer />
-
       <AnimatePresence>
-        {showPricing && (
-          <PricingModal close={() => setShowPricing(false)} />
-        )}
+        {showPricing && <PricingModal close={() => setShowPricing(false)} />}
       </AnimatePresence>
     </div>
   );
