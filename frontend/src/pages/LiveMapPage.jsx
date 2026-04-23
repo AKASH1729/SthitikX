@@ -45,6 +45,13 @@ const weakIcon = new L.Icon({
   className: "weak-marker",
 });
 
+// Helper: check if employee has sent data within last 3 minutes
+const isRecentlyActive = (emp) => {
+  if (!emp?.lastLocation?.timestamp) return false;
+  const diff = Date.now() - new Date(emp.lastLocation.timestamp).getTime();
+  return diff < 3 * 60 * 1000; // 3 minutes
+};
+
 // Component to handle auto‑fly to selected employee
 function FlyToSelected({ selected, autoFollow }) {
   const map = useMap();
@@ -80,8 +87,9 @@ const getAuthHeaders = () => {
   };
 };
 
+// Updated icon logic: uses isRecentlyActive instead of isTracking
 const getIcon = (emp) => {
-  if (!emp.isTracking) return offlineIcon;
+  if (!isRecentlyActive(emp)) return offlineIcon;
   if (emp.networkQuality === "weak") return weakIcon;
   return liveIcon;
 };
@@ -127,7 +135,6 @@ export default function LiveMapPage() {
         `/locations/history/${employeeId}?date=${formattedDate}&t=${Date.now()}`,
         getAuthHeaders()
       );
-      // ✅ FIX: use res.data.data (not res.data.logs)
       const logs = res.data.data || [];
       const coords = logs.filter(l => l.lat && l.lng).map(l => [l.lat, l.lng]);
       setHistoryPoints(coords);
@@ -157,12 +164,17 @@ export default function LiveMapPage() {
 
       setEmployees(prev =>
         prev.map(emp =>
-          emp._id === data.employeeId
+          // ✅ CRITICAL FIX: match by either _id or employeeId
+          (emp._id === data.employeeId || emp.employeeId === data.employeeId)
             ? {
                 ...emp,
-                lastLocation: { lat: data.lat, lng: data.lng, timestamp: data.timestamp },
-                battery: data.battery ?? emp.battery,
-                speed: data.speed ?? 0,
+                lastLocation: {
+                  lat: data.lat,
+                  lng: data.lng,
+                  timestamp: data.timestamp || new Date(), // ✅ timestamp safety
+                },
+                battery: data.battery !== undefined ? data.battery : emp.battery,
+                speed: data.speed ?? emp.speed ?? 0, // ✅ speed fallback
                 networkQuality: data.networkQuality ?? emp.networkQuality,
                 isTracking: true,
                 isOnline: true,
@@ -186,7 +198,7 @@ export default function LiveMapPage() {
     const handleOffline = (data) => {
       setEmployees(prev =>
         prev.map(emp =>
-          emp._id === data.employeeId
+          (emp._id === data.employeeId || emp.employeeId === data.employeeId)
             ? { ...emp, isTracking: false, isOnline: false }
             : emp
         )
@@ -196,7 +208,7 @@ export default function LiveMapPage() {
     const handleOnline = (data) => {
       setEmployees(prev =>
         prev.map(emp =>
-          emp._id === data.employeeId
+          (emp._id === data.employeeId || emp.employeeId === data.employeeId)
             ? { ...emp, isOnline: true }
             : emp
         )
@@ -216,7 +228,6 @@ export default function LiveMapPage() {
 
   const handleSelect = (emp) => {
     setSelected(emp);
-    // Map will auto‑fly via FlyToSelected component (with autoFollow)
   };
 
   const clearSelected = () => {
@@ -229,7 +240,7 @@ export default function LiveMapPage() {
     emp.employeeId?.toLowerCase().includes(search.toLowerCase())
   );
 
-  const onlineCount = employees.filter(e => e.isTracking).length;
+  const onlineCount = employees.filter(e => isRecentlyActive(e)).length;
 
   if (loading) return <LoadingSpinner fullScreen text="Loading live map..." />;
 
@@ -268,6 +279,7 @@ export default function LiveMapPage() {
           {filteredEmployees.map(emp => {
             const hasLocation = emp.lastLocation?.lat && emp.lastLocation?.lng;
             const isSelected = selected?._id === emp._id;
+            const active = isRecentlyActive(emp);
             return (
               <div
                 key={emp._id}
@@ -284,10 +296,11 @@ export default function LiveMapPage() {
                     <p className="font-medium text-sm text-gray-800 truncate">{emp.name}</p>
                     <p className="text-xs text-gray-500">{emp.employeeId}</p>
                   </div>
-                  <div className={`w-2.5 h-2.5 rounded-full ${emp.isTracking ? "bg-green-500 animate-pulse" : "bg-gray-300"}`} />
+                  <div className={`w-2.5 h-2.5 rounded-full ${active ? "bg-green-500 animate-pulse" : "bg-gray-300"}`} />
                 </div>
                 <div className="mt-1 ml-12 flex items-center gap-2 text-xs">
-                  {emp.battery != null && (
+                  {/* ✅ Battery display with NaN check */}
+                  {emp.battery != null && !isNaN(emp.battery) && (
                     <span className={emp.battery < 20 ? "text-red-500" : "text-gray-500"}>
                       Battery {emp.battery}%
                     </span>
@@ -328,7 +341,6 @@ export default function LiveMapPage() {
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
           />
 
-          {/* Marker clustering for better performance */}
           <MarkerClusterGroup chunkedLoading>
             {employees
               .filter(emp => !selected || emp._id === selected._id)
@@ -347,9 +359,16 @@ export default function LiveMapPage() {
                         <p className="font-bold text-base">{emp.name}</p>
                         <p>ID: {emp.employeeId}</p>
                         <p>Location: {formatCoord(lat)}, {formatCoord(lng)}</p>
-                        <p>Battery: {emp.battery ?? "N/A"}%</p>
-                        <p>Network: {emp.networkQuality === "weak" ? "⚠️ Weak signal" : (emp.isTracking ? "Good" : "Offline")}</p>
-                        <p>Status: {emp.isTracking ? "Live" : "Offline"}</p>
+                        <p>Battery: {emp.battery != null && !isNaN(emp.battery) ? `${emp.battery}%` : "N/A"}</p>
+                        <p>
+                          Network:{" "}
+                          {emp.networkQuality === "weak"
+                            ? "⚠️ Weak signal"
+                            : isRecentlyActive(emp)
+                            ? "Good"
+                            : "Offline"}
+                        </p>
+                        <p>Status: {isRecentlyActive(emp) ? "Live" : "Offline"}</p>
                       </div>
                     </Popup>
                   </Marker>
@@ -388,12 +407,24 @@ export default function LiveMapPage() {
             </div>
             <div className="text-sm space-y-1.5 border-t pt-3">
               <p>Location: {formatCoord(selected.lastLocation?.lat)}, {formatCoord(selected.lastLocation?.lng)}</p>
-              <p>Battery: <span className={selected.battery < 20 ? "text-red-500 font-bold" : ""}>{selected.battery ?? "N/A"}%</span></p>
+              <p>
+                Battery:{" "}
+                <span className={selected.battery < 20 ? "text-red-500 font-bold" : ""}>
+                  {selected.battery != null && !isNaN(selected.battery) ? `${selected.battery}%` : "N/A"}
+                </span>
+              </p>
               <p>Speed: {selected.speed ? `${selected.speed} km/h` : "—"}</p>
-              <p>Network: {selected.networkQuality === "weak" ? "⚠️ Weak signal" : (selected.isTracking ? "Good" : "Offline")}</p>
+              <p>
+                Network:{" "}
+                {selected.networkQuality === "weak"
+                  ? "⚠️ Weak signal"
+                  : isRecentlyActive(selected)
+                  ? "Good"
+                  : "Offline"}
+              </p>
               <p>Route points: {pathLoading ? "Loading..." : (paths[selected.employeeId]?.length || 0)}</p>
-              <p className={selected.isTracking ? "text-green-600 font-medium" : "text-red-500"}>
-                {selected.isTracking ? "Live tracking active" : "Offline"}
+              <p className={isRecentlyActive(selected) ? "text-green-600 font-medium" : "text-red-500"}>
+                {isRecentlyActive(selected) ? "Live tracking active" : "Offline"}
               </p>
             </div>
 
