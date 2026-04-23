@@ -1,112 +1,126 @@
-/**
- * Employee Data Routes — FINAL SaaS VERSION 🔥
- */
-
 const express = require("express");
 const EmployeeData = require("../models/EmployeeData");
-const { protect, authorize, companyFilter } = require("../middleware/auth");
+const { protect, companyFilter } = require("../middleware/auth");
+const checkPlan = require("../middleware/checkPlan");
 const { param } = require("express-validator");
 const { validate } = require("../middleware/validate");
-
-const fs = require("fs");
-const path = require("path");
+const xlsx = require("xlsx");
 
 const router = express.Router();
 
 /* =========================
-   🔐 GLOBAL SECURITY
+   🔐 MIDDLEWARE ORDER (FIXED)
 ========================= */
-router.use(protect, companyFilter);
-
+router.use(protect);
+router.use(companyFilter);
+router.use(checkPlan);
 
 /* =========================
-   📥 GET EMPLOYEE DATA
+   📥 GET DATA
 ========================= */
 router.get("/", async (req, res) => {
   try {
-    let query = {
-      companyId: req.companyId, // 🔥 multi-tenant safety
-    };
+    let query = { companyId: req.companyId };
 
-    // 🔒 Employee → only their own data
     if (req.user.role === "employee") {
-      query.employeeId = req.user.employeeId;
+      query.user = req.user._id;
     }
 
     const data = await EmployeeData.find(query)
-      .populate("user", "name email employeeId")
-      .populate("uploadedBy", "name email")
-      .sort({ uploadedAt: -1 })
-      .lean();
+      .populate("user", "name employeeId")
+      .sort({ uploadedAt: -1 });
 
-    return res.status(200).json({ data });
-
-  } catch (err) {
-    console.error("GET DATA ERROR:", err);
-    return res.status(500).json({
-      message: "Server error",
-      error: err.message,
+    res.json({
+      success: true,
+      data,
     });
+  } catch (err) {
+    console.error("GET ERROR:", err);
+    res.status(500).json({ message: err.message });
   }
 });
 
-
 /* =========================
-   ⬇️ DOWNLOAD FILE
+   ⬇️ DOWNLOAD EXCEL (FINAL FIX)
 ========================= */
 router.get(
   "/download/:id",
-  [
-    param("id").isMongoId().withMessage("Invalid ID"),
-  ],
+  [param("id").isMongoId()],
   validate,
   async (req, res) => {
     try {
+      console.log("📥 DOWNLOAD REQUEST");
+      console.log("ID:", req.params.id);
+      console.log("USER:", req.user._id);
+      console.log("REQ COMPANY:", req.companyId);
 
-      const record = await EmployeeData.findOne({
-        _id: req.params.id,
-        companyId: req.companyId, // 🔥 prevent cross-company access
-      });
+      /* 🔥 STEP 1: FIND WITHOUT COMPANY FILTER */
+      const record = await EmployeeData.findById(req.params.id).lean();
 
       if (!record) {
-        return res.status(404).json({ message: "Record not found" });
+        console.log("❌ Record not found in DB");
+        return res.status(404).json({
+          message: "Record not found",
+        });
       }
 
-      /* 🔒 EMPLOYEE SECURITY */
+      /* 🔥 STEP 2: COMPANY VALIDATION (CLEAR ERROR) */
+      if (
+        req.user.role !== "super_admin" &&
+        String(record.companyId) !== String(req.companyId)
+      ) {
+        console.log("❌ COMPANY MISMATCH");
+        console.log("Record company:", record.companyId);
+        console.log("Request company:", req.companyId);
+
+        return res.status(403).json({
+          message: "Company mismatch",
+        });
+      }
+
+      /* 🔒 EMPLOYEE ACCESS CHECK */
       if (
         req.user.role === "employee" &&
-        record.employeeId !== req.user.employeeId
+        record.user.toString() !== req.user._id.toString()
       ) {
-        return res.status(403).json({ message: "Unauthorized access" });
+        return res.status(403).json({
+          message: "Unauthorized",
+        });
       }
 
-      /* 🔒 SAFE FILE PATH */
-      const safeBase = path.join(__dirname, "..");
-      const filePath = path.join(
-        safeBase,
-        record.filePath,
-        record.fileName
+      /* 🔥 STEP 3: GENERATE EXCEL */
+      const workbook = xlsx.utils.book_new();
+      const sheet = xlsx.utils.json_to_sheet(record.data);
+      xlsx.utils.book_append_sheet(workbook, sheet, "Data");
+
+      const buffer = xlsx.write(workbook, {
+        type: "buffer",
+        bookType: "xlsx",
+      });
+
+      const fileName = `${record.employeeId || "data"}_${Date.now()}.xlsx`;
+
+      /* 🔥 STEP 4: RESPONSE HEADERS */
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       );
 
-      // 🔥 Prevent path traversal attack
-      if (!filePath.startsWith(safeBase)) {
-        return res.status(400).json({
-          message: "Invalid file path",
-        });
-      }
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${fileName}"`
+      );
 
-      if (!fs.existsSync(filePath)) {
-        return res.status(404).json({
-          message: "File not found",
-        });
-      }
+      res.setHeader("Content-Length", buffer.length);
 
-      return res.download(filePath, record.fileName);
+      /* 🔥 STEP 5: SEND FILE */
+      return res.send(buffer);
 
     } catch (err) {
-      console.error("DOWNLOAD ERROR:", err);
-      return res.status(500).json({
-        message: "Server error",
+      console.error("❌ DOWNLOAD ERROR:", err);
+
+      res.status(500).json({
+        message: "Download failed",
         error: err.message,
       });
     }
