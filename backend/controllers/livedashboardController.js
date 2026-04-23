@@ -1,8 +1,8 @@
-const LocationLog = require("../models/LocationLog");
+const LocationLog = require("../models/LocationLog"); // or bulkLocation if that's your actual model
 const User = require("../models/User");
 const Attendance = require("../models/Attendance");
 
-/* ================= DISTANCE ================= */
+/* ================= DISTANCE (KM) ================= */
 function getDistance(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -17,15 +17,26 @@ function getDistance(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+/* ================= DASHBOARD ================= */
 const getDashboard = async (req, res) => {
   try {
     const { date } = req.query;
 
-    /* 🔥 MULTI-TENANT: ONLY COMPANY USERS */
+    if (!date) {
+      return res.status(400).json({
+        success: false,
+        message: "Date is required",
+      });
+    }
+
+    const companyId = String(req.user.companyId);
+
+    /* 🔥 GET EMPLOYEES */
     const employees = await User.find({
       role: "employee",
-      companyId: req.user.companyId
-    }).select("_id name");
+      companyId,
+      isActive: true,
+    }).select("_id name employeeId");
 
     let totalDistanceAll = 0;
     let totalTimeAll = 0;
@@ -33,13 +44,14 @@ const getDashboard = async (req, res) => {
 
     const table = [];
 
+    /* ================= LOOP EMPLOYEES ================= */
     for (const emp of employees) {
 
-      /* 🔥 FILTER ATTENDANCE BY COMPANY */
+      /* 🔥 ATTENDANCE */
       const attendance = await Attendance.findOne({
         employee: emp._id,
-        date,
-        companyId: req.user.companyId
+        companyId,
+        date, // already "YYYY-MM-DD"
       });
 
       if (!attendance || !attendance.clockIn?.timestamp) {
@@ -48,7 +60,7 @@ const getDashboard = async (req, res) => {
           totalDistance: "0.00",
           totalTime: "0 min",
           motion: "0 min",
-          rest: "0 min"
+          rest: "0 min",
         });
         continue;
       }
@@ -58,11 +70,11 @@ const getDashboard = async (req, res) => {
         ? new Date(attendance.clockOut.timestamp)
         : new Date();
 
-      /* 🔥 FILTER LOCATION BY COMPANY */
+      /* 🔥 LOCATION LOGS (FIXED) */
       const logs = await LocationLog.find({
-        employee: emp._id,
-        companyId: req.user.companyId,
-        timestamp: { $gte: startTime, $lte: endTime }
+        employeeId: emp.employeeId,              // ✅ FIX
+        companyId,                               // ✅ STRING MATCH
+        timestamp: { $gte: startTime, $lte: endTime },
       }).sort({ timestamp: 1 });
 
       if (logs.length < 2) {
@@ -71,7 +83,7 @@ const getDashboard = async (req, res) => {
           totalDistance: "0.00",
           totalTime: "0 min",
           motion: "0 min",
-          rest: "0 min"
+          rest: "0 min",
         });
         continue;
       }
@@ -80,21 +92,32 @@ const getDashboard = async (req, res) => {
       let totalTime = 0;
       let motionTime = 0;
 
+      /* ================= CALCULATE ================= */
       for (let i = 1; i < logs.length; i++) {
         const prev = logs[i - 1];
         const curr = logs[i];
 
-        const d = getDistance(prev.lat, prev.lng, curr.lat, curr.lng);
+        // 🔥 HANDLE BOTH STRUCTURES
+        const prevLat = prev.lat ?? prev.location?.coordinates?.[1];
+        const prevLng = prev.lng ?? prev.location?.coordinates?.[0];
+
+        const currLat = curr.lat ?? curr.location?.coordinates?.[1];
+        const currLng = curr.lng ?? curr.location?.coordinates?.[0];
+
+        if (!prevLat || !prevLng || !currLat || !currLng) continue;
+
+        const d = getDistance(prevLat, prevLng, currLat, currLng);
         distance += d;
 
-        let diff =
+        const diff =
           (new Date(curr.timestamp) - new Date(prev.timestamp)) / 60000;
 
-        /* 🔥 IGNORE BIG GAPS */
-        if (diff > 5) continue;
+        /* 🔥 IGNORE BAD DATA (GPS GAP) */
+        if (diff <= 0 || diff > 5) continue;
 
         totalTime += diff;
 
+        /* 🔥 MOTION DETECTION */
         if (d > 0.01) {
           motionTime += diff;
         }
@@ -111,23 +134,28 @@ const getDashboard = async (req, res) => {
         totalDistance: distance.toFixed(2),
         totalTime: `${Math.round(totalTime)} min`,
         motion: `${Math.round(motionTime)} min`,
-        rest: `${Math.round(restTime)} min`
+        rest: `${Math.round(restTime)} min`,
       });
     }
 
     const restTimeAll = totalTimeAll - motionTimeAll;
 
+    /* ================= RESPONSE ================= */
     res.json({
+      success: true,
       totalDistance: totalDistanceAll.toFixed(2),
       totalTime: Math.round(totalTimeAll),
       motionTime: Math.round(motionTimeAll),
       restTime: Math.round(restTimeAll),
-      table
+      table,
     });
 
   } catch (err) {
-    console.error("Dashboard Error:", err);
-    res.status(500).json({ message: err.message });
+    console.error("❌ Dashboard Error:", err);
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 };
 

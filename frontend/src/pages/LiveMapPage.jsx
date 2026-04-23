@@ -8,9 +8,11 @@ import {
   Marker,
   Popup,
   Polyline,
+  useMap,
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
+import MarkerClusterGroup from "react-leaflet-cluster";
 
 // Fix default marker icons
 delete L.Icon.Default.prototype._getIconUrl;
@@ -20,7 +22,7 @@ L.Icon.Default.mergeOptions({
   shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
 });
 
-// Custom live marker (green pulse)
+// Custom icons
 const liveIcon = new L.Icon({
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
   iconSize: [25, 41],
@@ -29,7 +31,6 @@ const liveIcon = new L.Icon({
   className: "live-marker",
 });
 
-// Offline marker (gray)
 const offlineIcon = new L.Icon({
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
   iconSize: [25, 41],
@@ -37,7 +38,6 @@ const offlineIcon = new L.Icon({
   className: "offline-marker",
 });
 
-// 🔥 Weak network marker (yellow)
 const weakIcon = new L.Icon({
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
   iconSize: [25, 41],
@@ -45,10 +45,41 @@ const weakIcon = new L.Icon({
   className: "weak-marker",
 });
 
-// Helper to format coordinates
+// Component to handle auto‑fly to selected employee
+function FlyToSelected({ selected, autoFollow }) {
+  const map = useMap();
+  useEffect(() => {
+    if (selected && selected.lastLocation?.lat && selected.lastLocation?.lng) {
+      if (autoFollow) {
+        map.flyTo([selected.lastLocation.lat, selected.lastLocation.lng], 17, {
+          duration: 1.5,
+        });
+      }
+    }
+  }, [selected, autoFollow, map]);
+  return null;
+}
+
 const formatCoord = (v) => (v == null ? "—" : Number(v).toFixed(5));
 
-// Helper to choose icon based on employee status and network quality
+const formatDateForAPI = (date) => {
+  if (!date) return new Date().toISOString().split("T")[0];
+  if (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return new Date().toISOString().split("T")[0];
+  return d.toISOString().split("T")[0];
+};
+
+const getAuthHeaders = () => {
+  const token = localStorage.getItem("token");
+  return {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Cache-Control": "no-cache",
+    },
+  };
+};
+
 const getIcon = (emp) => {
   if (!emp.isTracking) return offlineIcon;
   if (emp.networkQuality === "weak") return weakIcon;
@@ -70,10 +101,9 @@ export default function LiveMapPage() {
   const [historyDate, setHistoryDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [historyPoints, setHistoryPoints] = useState([]);
 
-  // Fetch all live employees
   const fetchEmployees = useCallback(async () => {
     try {
-      const res = await api.get("/locations/live");
+      const res = await api.get(`/locations/live?t=${Date.now()}`, getAuthHeaders());
       setEmployees(res.data.employees || []);
     } catch (err) {
       console.error("Failed to fetch live locations:", err);
@@ -88,16 +118,19 @@ export default function LiveMapPage() {
     return () => clearInterval(interval);
   }, [fetchEmployees]);
 
-  // Load full route history for selected employee
   const loadRouteHistory = useCallback(async (employeeId, date = historyDate) => {
     if (!employeeId) return;
     try {
       setPathLoading(true);
-      const res = await api.get(`/locations/history/${employeeId}?date=${date}`);
-      const logs = res.data.logs || [];
+      const formattedDate = formatDateForAPI(date);
+      const res = await api.get(
+        `/locations/history/${employeeId}?date=${formattedDate}&t=${Date.now()}`,
+        getAuthHeaders()
+      );
+      // ✅ FIX: use res.data.data (not res.data.logs)
+      const logs = res.data.data || [];
       const coords = logs.filter(l => l.lat && l.lng).map(l => [l.lat, l.lng]);
       setHistoryPoints(coords);
-      // Also merge into paths state for that employee
       setPaths(prev => ({
         ...prev,
         [employeeId]: coords,
@@ -109,14 +142,12 @@ export default function LiveMapPage() {
     }
   }, [historyDate]);
 
-  // When selected employee changes, load their route
   useEffect(() => {
     if (selected) {
       loadRouteHistory(selected.employeeId);
     }
   }, [selected, loadRouteHistory]);
 
-  // WebSocket live updates
   useEffect(() => {
     if (!socket) return;
 
@@ -124,7 +155,6 @@ export default function LiveMapPage() {
       console.log("Live location update:", data);
       setLastUpdated(new Date());
 
-      // Update employee list
       setEmployees(prev =>
         prev.map(emp =>
           emp._id === data.employeeId
@@ -141,11 +171,9 @@ export default function LiveMapPage() {
         )
       );
 
-      // Append to path
       setPaths(prev => {
         const currentPath = prev[data.employeeId] || [];
         const newPoint = [data.lat, data.lng];
-        // Avoid duplicate consecutive points
         const last = currentPath[currentPath.length - 1];
         if (last && last[0] === newPoint[0] && last[1] === newPoint[1]) return prev;
         return {
@@ -153,15 +181,9 @@ export default function LiveMapPage() {
           [data.employeeId]: [...currentPath, newPoint].slice(-500),
         };
       });
-
-      // Auto-follow if selected
-      if (autoFollow && selected && data.employeeId === selected._id && mapRef.current) {
-        mapRef.current.flyTo([data.lat, data.lng], 17, { duration: 1 });
-      }
     };
 
     const handleOffline = (data) => {
-      console.log("Employee offline:", data);
       setEmployees(prev =>
         prev.map(emp =>
           emp._id === data.employeeId
@@ -172,7 +194,6 @@ export default function LiveMapPage() {
     };
 
     const handleOnline = (data) => {
-      console.log("Employee online:", data);
       setEmployees(prev =>
         prev.map(emp =>
           emp._id === data.employeeId
@@ -191,14 +212,11 @@ export default function LiveMapPage() {
       off("system:employee-offline", handleOffline);
       off("system:employee-online", handleOnline);
     };
-  }, [socket, on, off, selected, autoFollow]);
+  }, [socket, on, off]);
 
   const handleSelect = (emp) => {
     setSelected(emp);
-    const { lat, lng } = emp.lastLocation || {};
-    if (lat && lng && mapRef.current) {
-      mapRef.current.flyTo([lat, lng], 17);
-    }
+    // Map will auto‑fly via FlyToSelected component (with autoFollow)
   };
 
   const clearSelected = () => {
@@ -310,51 +328,53 @@ export default function LiveMapPage() {
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
           />
 
-          {/* Markers */}
-          {employees
-            .filter(emp => !selected || emp._id === selected._id)
-            .map(emp => {
-              const { lat, lng } = emp.lastLocation || {};
-              if (!lat || !lng) return null;
-              return (
-                <Marker
-                  key={emp._id}
-                  position={[lat, lng]}
-                  icon={getIcon(emp)}   // ✅ uses networkQuality to choose icon
-                  eventHandlers={{ click: () => handleSelect(emp) }}
-                >
-                  <Popup>
-                    <div className="text-sm space-y-1">
-                      <p className="font-bold text-base">{emp.name}</p>
-                      <p>ID: {emp.employeeId}</p>
-                      <p>Location: {formatCoord(lat)}, {formatCoord(lng)}</p>
-                      <p>Battery: {emp.battery ?? "N/A"}%</p>
-                      <p>Network: {emp.networkQuality === "weak" ? "⚠️ Weak signal" : (emp.isTracking ? "Good" : "Offline")}</p>
-                      <p>Status: {emp.isTracking ? "Live" : "Offline"}</p>
-                    </div>
-                  </Popup>
-                </Marker>
-              );
-            })}
+          {/* Marker clustering for better performance */}
+          <MarkerClusterGroup chunkedLoading>
+            {employees
+              .filter(emp => !selected || emp._id === selected._id)
+              .map(emp => {
+                const { lat, lng } = emp.lastLocation || {};
+                if (!lat || !lng) return null;
+                return (
+                  <Marker
+                    key={emp._id}
+                    position={[lat, lng]}
+                    icon={getIcon(emp)}
+                    eventHandlers={{ click: () => handleSelect(emp) }}
+                  >
+                    <Popup>
+                      <div className="text-sm space-y-1">
+                        <p className="font-bold text-base">{emp.name}</p>
+                        <p>ID: {emp.employeeId}</p>
+                        <p>Location: {formatCoord(lat)}, {formatCoord(lng)}</p>
+                        <p>Battery: {emp.battery ?? "N/A"}%</p>
+                        <p>Network: {emp.networkQuality === "weak" ? "⚠️ Weak signal" : (emp.isTracking ? "Good" : "Offline")}</p>
+                        <p>Status: {emp.isTracking ? "Live" : "Offline"}</p>
+                      </div>
+                    </Popup>
+                  </Marker>
+                );
+              })}
+          </MarkerClusterGroup>
 
-          {/* Path for selected employee (today's route + live updates) */}
+          {/* Path for selected employee */}
           {selected && paths[selected.employeeId]?.length > 1 && (
             <Polyline
               positions={paths[selected.employeeId]}
               pathOptions={{ color: "#3b82f6", weight: 4, opacity: 0.8 }}
             />
           )}
-
-          {/* Historical path for selected employee if different from live */}
           {selected && historyPoints.length > 1 && (
             <Polyline
               positions={historyPoints}
               pathOptions={{ color: "#9ca3af", weight: 2, opacity: 0.5, dashArray: "5,5" }}
             />
           )}
+
+          <FlyToSelected selected={selected} autoFollow={autoFollow} />
         </MapContainer>
 
-        {/* Info card for selected employee */}
+        {/* Info card */}
         {selected && (
           <div className="absolute bottom-4 left-4 bg-white shadow-xl rounded-xl p-4 w-80 z-[1000] border">
             <div className="flex items-center gap-3 mb-3">
@@ -377,7 +397,6 @@ export default function LiveMapPage() {
               </p>
             </div>
 
-            {/* Date selector for history */}
             <div className="mt-3">
               <label className="text-xs text-gray-500 block mb-1">Show route for date</label>
               <input
@@ -407,7 +426,9 @@ export default function LiveMapPage() {
               <button
                 onClick={() => {
                   const { lat, lng } = selected.lastLocation || {};
-                  if (lat && lng && mapRef.current) mapRef.current.flyTo([lat, lng], 17);
+                  if (lat && lng && mapRef.current) {
+                    mapRef.current.flyTo([lat, lng], 17, { duration: 1 });
+                  }
                 }}
                 className="text-xs text-blue-600 hover:underline"
               >

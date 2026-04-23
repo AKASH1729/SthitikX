@@ -39,11 +39,17 @@ const superAdminRoutes = require('./routes/superAdminRoutes');
 const Fieldlocation = require('./routes/fieldRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const bulkLocationRoutes = require('./routes/bulkLocationRoutes');
-
+const billingRoutes = require("./routes/billingRoutes");
 /* ================= APP INIT ================= */
 const app = express();
-const server = http.createServer(app);
+app.set("trust proxy", 1); // ✅ FIX (VERY IMPORTANT)
 
+app.use((req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
+
+const server = http.createServer(app);
 /* ================= CORS (SECURE) ================= */
 app.use(cors({
   origin: [
@@ -135,7 +141,7 @@ app.use('/api/geofences', geofenceRoutes);
 
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/dashboards', liveDashboardRoutes);
-
+app.use("/api/billing", billingRoutes);
 app.use('/api', uploadRoutes);
 app.use('/api/employee-data', employeeDataRoutes);
 
@@ -146,7 +152,6 @@ app.use('/api/super-admin', superAdminRoutes);
 app.use("/api/bulk-location", bulkLocationRoutes);
 app.use("/api/field-locations", Fieldlocation);
 app.use("/api/payment", paymentRoutes);
-
 /* ================= HEALTH CHECK ================= */
 app.get('/api/health', (req, res) => {
   res.json({

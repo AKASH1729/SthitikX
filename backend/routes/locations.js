@@ -1,13 +1,8 @@
-/**
- * Location Routes — FINAL (REAL-TIME + OFFLINE SYNC 🔥)
- */
-
 const express = require("express");
 const { param } = require("express-validator");
 
 const {
-  updateLocation,
-  syncLocations, // 🔥 NEW
+  syncLocations,
   getRouteHistory,
   getLiveLocations,
 } = require("../controllers/locationController");
@@ -24,45 +19,35 @@ const checkPlan = require("../middleware/checkPlan");
 const router = express.Router();
 
 /* =========================
-🔐 GLOBAL SECURITY (FIXED)
+🔥 BULK SYNC (PROTECTED)
 ========================= */
-// ❌ You used protect twice → remove duplicate
-router.use(protect, companyFilter, checkPlan);
-
-/* =========================
-   📍 REAL-TIME LOCATION
-========================= */
-// 👉 Only employee can send live location
-router.post(
-  "/update",
-  authorize("employee"),
-  updateLocation
-);
-
-/* =========================
-   🔥 OFFLINE SYNC (NEW)
-========================= */
-// 👉 Employee sends batch data when internet comes back
 router.post(
   "/sync",
+  protect,
+  companyFilter,
+  checkPlan,
   authorize("employee"),
   syncLocations
 );
 
 /* =========================
-   📡 LIVE LOCATIONS (ADMIN)
+📡 LIVE LOCATIONS (PUBLIC FIX)
 ========================= */
 router.get(
   "/live",
-  authorize("admin"),
+  protect,        // 🔥 REQUIRED
+  companyFilter,  // 🔥 REQUIRED
   getLiveLocations
 );
-
 /* =========================
-   🛣 ROUTE HISTORY
+🛣 ROUTE HISTORY (PROTECTED)
 ========================= */
 router.get(
   "/history/:employeeId",
+  protect,
+  companyFilter,
+  checkPlan,
+
   [
     param("employeeId")
       .notEmpty()
@@ -71,33 +56,24 @@ router.get(
   validate,
 
   async (req, res, next) => {
-    try {
-      /* 🔒 Employee can only see their own */
-      if (
-        req.user.role === "employee" &&
-        req.params.employeeId !== req.user.employeeId
-      ) {
-        return res.status(403).json({
-          success: false,
-          message: "Unauthorized access",
-        });
-      }
-
-      /* ❌ Block super admin */
-      if (req.user.role === "super_admin") {
-        return res.status(403).json({
-          success: false,
-          message: "Super admin not allowed",
-        });
-      }
-
-      next();
-    } catch (err) {
-      return res.status(500).json({
+    if (
+      req.user.role === "employee" &&
+      req.params.employeeId !== req.user.employeeId
+    ) {
+      return res.status(403).json({
         success: false,
-        message: err.message,
+        message: "Unauthorized",
       });
     }
+
+    if (req.user.role === "super_admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Not allowed",
+      });
+    }
+
+    next();
   },
 
   getRouteHistory

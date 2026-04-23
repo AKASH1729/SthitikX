@@ -6,6 +6,14 @@ const checkPlan = require("../middleware/checkPlan");
 
 const { getBilling } = require("../controllers/billingController");
 
-router.get("/", protect, checkPlan, getBilling);
+/* =========================================
+   💰 GET BILLING (MAIN ROUTE)
+========================================= */
+router.get(
+  "/",                // 🔥 THIS WAS MISSING
+  protect,
+  checkPlan,
+  getBilling
+);
 
 module.exports = router;

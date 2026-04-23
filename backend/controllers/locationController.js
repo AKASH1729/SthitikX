@@ -1,277 +1,200 @@
-/**
- * LOCATION CONTROLLER (FIXED - PRODUCTION READY)
- */
-
+const Location = require("../models/bulkLocation");
 const User = require("../models/User");
-const LocationLog = require("../models/LocationLog");
 
 /* =========================================
-   📍 UPDATE LOCATION (REAL-TIME)
-========================================= */
-const updateLocation = async (req, res) => {
-  try {
-    const {
-      lat,
-      lng,
-      battery = null,
-      speed = 0,
-      accuracy = null,
-      deviceId,
-      syncId,
-      networkQuality = "good",
-    } = req.body;
-
-    if (!req.user || !req.user._id) {
-      return res.status(401).json({ success: false, message: "Unauthorized" });
-    }
-
-    if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) {
-      return res.status(400).json({ success: false, message: "Invalid lat/lng" });
-    }
-
-    if (!deviceId || !syncId) {
-      return res.status(400).json({ success: false, message: "deviceId & syncId required" });
-    }
-
-    const now = new Date();
-    const today = now.toISOString().split("T")[0];
-
-    // ✅ Update live user
-    await User.findOneAndUpdate(
-      { _id: req.user._id, companyId: req.user.companyId },
-      {
-        lastLocation: {
-          lat: Number(lat),
-          lng: Number(lng),
-          timestamp: now,
-        },
-        battery,
-        isTracking: true,
-        networkQuality,
-      }
-    );
-
-    // ✅ Save log (duplicate safe)
-    try {
-      await LocationLog.create({
-        employee: req.user._id,
-        employeeId: req.user.employeeId,
-        companyId: req.user.companyId,
-        deviceId,
-        syncId,
-        location: {
-          type: "Point",
-          coordinates: [Number(lng), Number(lat)],
-        },
-        lat: Number(lat),
-        lng: Number(lng),
-        speed,
-        accuracy,
-        date: today,
-        timestamp: now,
-        battery,
-        networkQuality,
-      });
-    } catch (err) {
-      if (err.code !== 11000) throw err;
-    }
-
-    // ✅ Realtime socket
-    if (req.io) {
-      req.io.to(`company_${req.user.companyId}`).emit("location:update", {
-        employeeId: req.user.employeeId,
-        lat,
-        lng,
-        battery,
-        speed,
-        networkQuality,
-        timestamp: now,
-      });
-    }
-
-    return res.json({ success: true });
-  } catch (err) {
-    console.error("❌ updateLocation:", err);
-    return res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-/* =========================================
-   🔥 OFFLINE BULK SYNC
+🔥 BULK SYNC (APK → SERVER)
 ========================================= */
 const syncLocations = async (req, res) => {
   try {
-    if (!req.user || !req.user._id) {
-      return res.status(401).json({ success: false });
+    const { batch } = req.body;
+
+    if (!Array.isArray(batch) || batch.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid batch",
+      });
     }
 
-    const locations = req.body;
-    if (!Array.isArray(locations)) {
-      return res.status(400).json({ success: false });
+    const docs = batch
+      .filter(item => item.lat && item.lng)
+      .map(item => {
+        const lat = Number(item.lat);
+        const lng = Number(item.lng);
+
+        return {
+          syncId: item.syncId,
+          employeeId: item.employeeId,
+          companyId: String(req.user.companyId),
+
+          deviceId: item.deviceId,
+
+          location: {
+            type: "Point",
+            coordinates: [lng, lat],
+          },
+
+          lat,
+          lng,
+
+          speed: item.speed || 0,
+          accuracy: item.accuracy || null,
+          battery: item.battery ?? -1,
+          networkQuality: item.networkQuality || "good",
+
+          timestamp: new Date(), // 🔥 SERVER TIME
+        };
+      });
+
+    await Location.bulkWrite(
+      docs.map(doc => ({
+        updateOne: {
+          filter: { syncId: doc.syncId },
+          update: { $setOnInsert: doc },
+          upsert: true,
+        }
+      }))
+    );
+
+    /* 🔥 UPDATE USER LIVE STATUS */
+    for (const item of docs) {
+      await User.updateOne(
+        { employeeId: item.employeeId },
+        {
+          lastLocation: {
+            lat: item.lat,
+            lng: item.lng,
+            timestamp: item.timestamp,
+          },
+          battery: item.battery,
+          networkQuality: item.networkQuality,
+          // ⚠️ DO NOT change isTracking here
+        }
+      );
     }
 
-    const now = new Date();
+    console.log("✅ Locations synced:", docs.length);
 
-    const formatted = locations.map((d) => ({
-      employee: req.user._id,
-      employeeId: req.user.employeeId,
-      companyId: req.user.companyId,
-      deviceId: d.deviceId,
-      syncId: d.syncId,
-      location: {
-        type: "Point",
-        coordinates: [Number(d.lng), Number(d.lat)],
-      },
-      lat: Number(d.lat),
-      lng: Number(d.lng),
-      speed: d.speed || 0,
-      accuracy: d.accuracy || null,
-      battery: d.battery || null, // ✅ FIXED
-      date: d.date || now.toISOString().split("T")[0],
-      timestamp: d.timestamp || now,
-      networkQuality: d.networkQuality || "good",
-    }));
+    res.json({
+      success: true,
+      inserted: docs.length,
+    });
 
-    await LocationLog.insertMany(formatted, { ordered: false });
-
-    // ✅ Latest location update
-    const lastItem = formatted.reduce((a, b) =>
-      new Date(a.timestamp) > new Date(b.timestamp) ? a : b
-    );
-
-    await User.findOneAndUpdate(
-      { _id: req.user._id, companyId: req.user.companyId },
-      {
-        lastLocation: {
-          lat: lastItem.lat,
-          lng: lastItem.lng,
-          timestamp: lastItem.timestamp,
-        },
-        battery: lastItem.battery,
-        isTracking: true,
-        networkQuality: lastItem.networkQuality,
-      }
-    );
-
-    return res.json({ success: true, count: formatted.length });
   } catch (err) {
     console.error("❌ syncLocations:", err);
-    return res.status(500).json({ success: false });
+    res.status(500).json({ success: false });
   }
 };
 
+
 /* =========================================
-   📡 GET LIVE LOCATIONS (FIXED + FAST)
+📡 LIVE LOCATIONS (FINAL FIX)
 ========================================= */
 const getLiveLocations = async (req, res) => {
   try {
-    const employees = await User.find({
+    if (!req.user || !req.user.companyId) {
+      return res.status(401).json({
+        success: false,
+        message: "No company context",
+      });
+    }
+
+    const companyId = req.user.companyId;
+
+    /* 🔥 GET USERS */
+    const users = await User.find({
+      companyId,
       role: "employee",
       isActive: true,
-      companyId: req.user.companyId,
-    }).select("name employeeId lastLocation battery networkQuality");
+    }).select(
+      "name employeeId lastLocation battery networkQuality isTracking"
+    );
 
     const now = Date.now();
-    const ONLINE_THRESHOLD = 5 * 60 * 1000; // ✅ FIXED (5 min)
+    const ONLINE_THRESHOLD = 10 * 60 * 1000; // 10 minutes
 
-    // ✅ Get all latest logs in ONE query (performance fix)
-    const logs = await LocationLog.aggregate([
-      {
-        $match: { companyId: req.user.companyId },
-      },
-      {
-        $sort: { timestamp: -1 },
-      },
-      {
-        $group: {
-          _id: "$employeeId",
-          doc: { $first: "$$ROOT" },
-        },
-      },
-    ]);
-
-    const logMap = {};
-    logs.forEach((l) => {
-      logMap[l._id] = l.doc;
-    });
-
-    const result = employees.map((emp) => {
+    const employees = users.map((emp) => {
       let lastLocation = emp.lastLocation;
       let battery = emp.battery;
       let networkQuality = emp.networkQuality || "good";
 
       let isOnline = false;
 
-      // ✅ Check user table first
+      /* 🔹 CHECK LAST LOCATION TIME */
       if (lastLocation?.timestamp) {
         const diff = now - new Date(lastLocation.timestamp).getTime();
-        if (diff < ONLINE_THRESHOLD) isOnline = true;
-      }
-
-      // ✅ fallback to logs
-      if (!isOnline && logMap[emp.employeeId]) {
-        const log = logMap[emp.employeeId];
-        const diff = now - new Date(log.timestamp).getTime();
-
         if (diff < ONLINE_THRESHOLD) {
           isOnline = true;
-
-          lastLocation = {
-            lat: log.lat,
-            lng: log.lng,
-            timestamp: log.timestamp,
-          };
-
-          battery = log.battery;
-          networkQuality = log.networkQuality;
         }
       }
+
+      /* 🔥 FINAL FIX: RESPECT CLOCK-IN / CLOCK-OUT */
+      const isTracking = emp.isTracking && isOnline;
 
       return {
         _id: emp._id,
         name: emp.name,
         employeeId: emp.employeeId,
+
         lastLocation,
         battery,
         networkQuality,
+
         isOnline,
-        isTracking: isOnline,
+        isTracking, // ✅ FINAL FIX
       };
     });
 
-    return res.json({
+    res.json({
       success: true,
-      employees: result,
+      employees,
     });
+
   } catch (err) {
     console.error("❌ getLiveLocations:", err);
-    return res.status(500).json({ success: false });
+    res.status(500).json({ success: false });
   }
 };
 
+
 /* =========================================
-   🛣 ROUTE HISTORY
+🛣 ROUTE HISTORY
 ========================================= */
 const getRouteHistory = async (req, res) => {
   try {
     const { employeeId } = req.params;
+    const { date } = req.query;
 
-    const logs = await LocationLog.find({
+    /* 🔥 FIX: IST → UTC RANGE */
+    const start = new Date(`${date}T00:00:00+05:30`);
+    const end = new Date(`${date}T23:59:59.999+05:30`);
+
+    const logs = await Location.find({
       employeeId,
-      companyId: req.user.companyId,
-    })
-      .sort({ timestamp: 1 })
-      .limit(1000);
+      companyId: String(req.user.companyId),
+      timestamp: {
+        $gte: start,
+        $lte: end,
+      },
+    }).sort({ timestamp: 1 });
 
-    return res.json({ success: true, logs });
+    const formatted = logs.map(l => ({
+      lat: l.lat,
+      lng: l.lng,
+      timestamp: l.timestamp,
+    }));
+
+    res.json({
+      success: true,
+      data: formatted,
+    });
+
   } catch (err) {
-    console.error("❌ getRouteHistory:", err);
-    return res.status(500).json({ success: false });
+    console.error(err);
+    res.status(500).json({ success: false });
   }
 };
 
 module.exports = {
-  updateLocation,
   syncLocations,
   getLiveLocations,
   getRouteHistory,

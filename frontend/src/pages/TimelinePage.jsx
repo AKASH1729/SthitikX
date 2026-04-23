@@ -52,29 +52,42 @@ export default function TimelinePage() {
   }, []);
 
   /* ================= FETCH TIMELINE ================= */
-  const fetchTimeline = useCallback(async (empId, d) => {
-    if (!empId || !d) return;
+const fetchTimeline = useCallback(async (empId, d) => {
+  if (!empId || !d) return;
 
-    setLoading(true);
-    setError(null);
+  setLoading(true);
+  setError(null);
 
-    try {
-      const res = await api.get(`/timeline?employeeId=${empId}&date=${d}`);
-      setTimeline(res.data || []);
+  try {
+    const res = await api.get(
+      `/timeline?employeeId=${empId}&date=${d}`
+    );
 
-      let coords = [];
-      res.data.forEach((t) => {
-        if (t.points) coords.push(...t.points);
-      });
-      setSelectedPath(coords);
-      setActiveIndex(null);
-    } catch (err) {
-      console.error("TIMELINE ERROR:", err);
-      setError("Failed to load timeline");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    // ✅ FIX: get correct array
+    const timelineData = res.data?.data || [];
+
+    setTimeline(timelineData);
+
+    // ✅ FIX: safe iteration
+    let coords = [];
+    timelineData.forEach((t) => {
+      if (t.points && Array.isArray(t.points)) {
+        coords.push(...t.points);
+      }
+    });
+
+    setSelectedPath(coords);
+    setActiveIndex(null);
+
+    console.log("TIMELINE:", timelineData.length);
+
+  } catch (err) {
+    console.error("TIMELINE ERROR:", err);
+    setError("Failed to load timeline");
+  } finally {
+    setLoading(false);
+  }
+}, []);
 
   /* ================= HANDLE SELECTION ================= */
   const handleEmployeeChange = (e) => {

@@ -28,6 +28,7 @@ const NAV_ITEMS = [
       { to: "/app/geofences", label: "Geofences" },
       { to: "/app/alerts", label: "Alerts" },
       { to: "/app/upload-excel", label: "Upload Data" },
+	{ to: "/app/billing", label: "Billing " },
     ],
   },
   {

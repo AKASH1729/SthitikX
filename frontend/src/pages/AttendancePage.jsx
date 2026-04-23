@@ -3,10 +3,22 @@ import { format, parseISO } from "date-fns";
 import api from "../services/api";
 import { useAuth } from "../context/AuthContext";
 import LoadingSpinner from "../components/Shared/LoadingSpinner";
-import { FiClock, FiMapPin, FiWifi, FiWifiOff, FiCheckCircle, FiAlertCircle, FiShield } from "react-icons/fi";
+import {
+  FiClock,
+  FiMapPin,
+  FiWifi,
+  FiWifiOff,
+  FiCheckCircle,
+  FiAlertCircle,
+  FiShield,
+  FiCalendar,
+  FiUser,
+  FiLogIn,
+  FiLogOut,
+} from "react-icons/fi";
 
 const formatHours = (h) => {
-  if (!h) return "—";
+  if (!h && h !== 0) return "—";
   const hrs = Math.floor(h);
   const mins = Math.round((h - hrs) * 60);
   return `${hrs}h ${mins}m`;
@@ -16,7 +28,8 @@ export default function AttendancePage() {
   const { user } = useAuth();
   const isAdmin = ["admin", "super_admin"].includes(user?.role);
 
-  const [records, setRecords] = useState([]);
+  // State
+  const [groupedRecords, setGroupedRecords] = useState({}); // key: YYYY-MM-DD, value: array
   const [today, setToday] = useState(null);
   const [loading, setLoading] = useState(true);
   const [btnLoading, setBtnLoading] = useState(false);
@@ -25,6 +38,8 @@ export default function AttendancePage() {
   const [showLocation, setShowLocation] = useState(false);
   const [assignedGeofence, setAssignedGeofence] = useState(null);
   const [geofenceError, setGeofenceError] = useState("");
+  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
   const locationIntervalRef = useRef(null);
 
@@ -95,9 +110,7 @@ export default function AttendancePage() {
 
   const startTracking = useCallback(() => {
     if (locationIntervalRef.current) return;
-    // Send first location immediately
     updateLocation();
-    // Then every 30 seconds
     locationIntervalRef.current = setInterval(updateLocation, 30000);
   }, [updateLocation]);
 
@@ -108,45 +121,70 @@ export default function AttendancePage() {
     }
   }, []);
 
-  /* ================= FETCH RECORDS & GEOFENCE ================= */
-  const fetchRecords = useCallback(async () => {
+  /* ================= FETCH TODAY & GEOFENCE ================= */
+  const fetchTodayAndGeofence = useCallback(async () => {
     try {
-      setLoading(true);
-      const [all, todayRes] = await Promise.all([
-        api.get("/attendance"),
+      const [todayRes, geofenceRes] = await Promise.all([
         api.get("/attendance/today"),
+        isAdmin ? Promise.resolve({ data: {} }) : api.get("/users/me/geofence").catch(() => ({ data: {} })),
       ]);
-      setRecords(all.data.records);
       setToday(todayRes.data.attendance);
-
-      // Only fetch geofence for non‑admin users
-      if (!isAdmin) {
-        try {
-          const geofenceRes = await api.get("/users/me/geofence");
-          if (geofenceRes.data?.geofence) setAssignedGeofence(geofenceRes.data.geofence);
-        } catch {
-          // ignore
-        }
+      if (!isAdmin && geofenceRes.data?.geofence) {
+        setAssignedGeofence(geofenceRes.data.geofence);
       }
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
+    } catch (err) {
+      console.error("Failed to fetch today's data", err);
     }
   }, [isAdmin]);
 
+  /* ================= FETCH GROUPED RECORDS FOR SELECTED DATE ================= */
+  const fetchGroupedRecords = useCallback(async (date) => {
+    if (!date) return;
+    setLoadingHistory(true);
+    try {
+      const res = await api.get(`/attendance?date=${date}`);
+      // 🔥 FIX: backend returns grouped data under res.data.data
+      const grouped = res.data.data || {};
+      setGroupedRecords(grouped);
+    } catch (err) {
+      console.error("Failed to fetch attendance for date", err);
+      setGroupedRecords({});
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, []);
+
+  // Initial load
   useEffect(() => {
-    fetchRecords();
-    // Check if user was already clocked in (tracking flag)
+    const init = async () => {
+      setLoading(true);
+      await fetchTodayAndGeofence();
+      await fetchGroupedRecords(selectedDate);
+      setLoading(false);
+    };
+    init();
+  }, [fetchTodayAndGeofence, fetchGroupedRecords, selectedDate]);
+
+  // When date picker changes, fetch new records
+  useEffect(() => {
+    if (selectedDate) {
+      fetchGroupedRecords(selectedDate);
+    }
+  }, [selectedDate, fetchGroupedRecords]);
+
+  // Tracking start/stop based on clock-in status
+  useEffect(() => {
     if (localStorage.getItem("tracking") === "true") {
       startTracking();
+    } else {
+      stopTracking();
     }
     const interval = setInterval(syncOfflineData, 15000);
     return () => {
       stopTracking();
       clearInterval(interval);
     };
-  }, [fetchRecords, startTracking, stopTracking, syncOfflineData]);
+  }, [startTracking, stopTracking, syncOfflineData]);
 
   /* ================= GEOFENCE VALIDATION ================= */
   const checkInsideGeofence = (lat, lng) => {
@@ -186,8 +224,12 @@ export default function AttendancePage() {
 
       await api.post("/attendance/clock-in", loc);
       localStorage.setItem("tracking", "true");
-      startTracking(); // start 30‑sec location updates
-      fetchRecords();
+      startTracking();
+      await fetchTodayAndGeofence();
+      // Refresh records for the selected date if it's today
+      if (selectedDate === new Date().toISOString().split("T")[0]) {
+        await fetchGroupedRecords(selectedDate);
+      }
     } catch (err) {
       alert(err.response?.data?.message || "Clock-in failed. Enable location and try again.");
     }
@@ -210,220 +252,287 @@ export default function AttendancePage() {
 
       await api.post("/attendance/clock-out", loc);
       localStorage.removeItem("tracking");
-      stopTracking(); // stop location updates
-      fetchRecords();
+      stopTracking();
+      await fetchTodayAndGeofence();
+      if (selectedDate === new Date().toISOString().split("T")[0]) {
+        await fetchGroupedRecords(selectedDate);
+      }
     } catch (err) {
       alert(err.response?.data?.message || "Clock-out failed.");
     }
     setBtnLoading(false);
   };
 
-  if (loading) return <LoadingSpinner text="Loading attendance data..." />;
+  if (loading) return <LoadingSpinner fullScreen />;
 
   const alreadyClockedIn = !!today?.clockIn;
   const alreadyClockedOut = !!today?.clockOut;
 
   const statusConfig = {
-    online: { icon: <FiWifi className="text-green-500" />, text: "Online" },
-    offline: { icon: <FiWifiOff className="text-red-500" />, text: "Offline" },
-    synced: { icon: <FiCheckCircle className="text-green-500" />, text: "Synced" },
-    "sync-failed": { icon: <FiAlertCircle className="text-yellow-500" />, text: "Sync Failed" },
+    online: { icon: <FiWifi className="inline mr-1" />, text: "Online" },
+    offline: { icon: <FiWifiOff className="inline mr-1" />, text: "Offline" },
+    synced: { icon: <FiCheckCircle className="inline mr-1" />, text: "Synced" },
+    "sync-failed": { icon: <FiAlertCircle className="inline mr-1" />, text: "Sync Failed" },
   };
 
+  // Sort dates descending (newest first)
+  const sortedDates = Object.keys(groupedRecords).sort((a, b) => new Date(b) - new Date(a));
+
   return (
-    <div className="min-h-screen bg-gray-50 p-4 md:p-6 w-full">
-      {/* Header - Full Width */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-gray-800">Attendance Dashboard</h1>
-          <p className="text-gray-600">
-            {isAdmin ? "View all employee attendance records" : "Track your work hours and location"}
-          </p>
+    <div className="min-h-screen bg-gray-50">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Header */}
+        <div className="flex flex-wrap justify-between items-center mb-8">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Attendance Dashboard</h1>
+            <p className="text-gray-500 mt-1">
+              {isAdmin ? "View all employee attendance records" : "Track your work hours and location"}
+            </p>
+          </div>
+          <div className="flex items-center gap-3 mt-3 sm:mt-0">
+            <div className="bg-white rounded-full px-4 py-2 shadow-sm text-sm font-medium text-gray-700">
+              {statusConfig[syncStatus].icon}
+              {statusConfig[syncStatus].text}
+            </div>
+          </div>
         </div>
-        <div className="flex items-center mt-2 md:mt-0 bg-white px-3 py-2 rounded-full shadow-sm">
-          {statusConfig[syncStatus].icon}
-          <span className="ml-2 text-sm font-medium text-gray-700">{statusConfig[syncStatus].text}</span>
-        </div>
-      </div>
 
-      {/* Employee‑only content: geofence info & action cards */}
-      {!isAdmin && (
-        <>
-          {/* Geofence Alert */}
-          {geofenceError && (
-            <div className="mb-6 bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded-lg flex items-start gap-3">
-              <FiAlertCircle className="text-yellow-500 mt-0.5" />
-              <div>
-                <p className="font-medium text-yellow-800">Geofence Restriction</p>
-                <p className="text-sm text-yellow-700">{geofenceError}</p>
-              </div>
-              <button onClick={() => setGeofenceError("")} className="ml-auto text-yellow-600">✕</button>
-            </div>
-          )}
-
-          {/* Assigned Geofence Badge */}
-          {assignedGeofence && (
-            <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center gap-2">
-              <FiShield className="text-blue-600" />
-              <span className="text-sm text-blue-800">
-                Your assigned work zone: <strong>{assignedGeofence.name}</strong> (radius {assignedGeofence.radius}m)
-              </span>
-            </div>
-          )}
-
-          {/* Three Cards Row (only for employees) */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-            {/* Status Card */}
-            <div className="bg-white rounded-xl shadow p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold text-gray-700">Today's Status</h2>
-                <FiClock className="text-blue-500" />
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-gray-500">Current Status</p>
-                  <p className="text-xl font-bold mt-1">
-                    {alreadyClockedOut ? "Completed" : alreadyClockedIn ? "Working" : "Not Started"}
-                  </p>
+        {/* Employee‑only content */}
+        {!isAdmin && (
+          <div className="space-y-6 mb-10">
+            {/* Geofence error alert */}
+            {geofenceError && (
+              <div className="bg-amber-50 border-l-4 border-amber-400 p-4 rounded-lg flex items-start gap-3 shadow-sm">
+                <FiAlertCircle className="text-amber-500 text-xl flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="font-semibold text-amber-800">Geofence Restriction</p>
+                  <p className="text-sm text-amber-700">{geofenceError}</p>
                 </div>
-                <div className="text-right">
-                  <p className="text-gray-500">Hours Today</p>
-                  <p className="text-xl font-bold mt-1">{today?.totalHours ? formatHours(today.totalHours) : "—"}</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Action Buttons */}
-            <div className="bg-white rounded-xl shadow p-6">
-              <h2 className="text-lg font-semibold text-gray-700 mb-4">Actions</h2>
-              <div className="flex flex-col space-y-3">
-                <button
-                  disabled={alreadyClockedIn || btnLoading}
-                  onClick={handleClockIn}
-                  className={`flex items-center justify-center py-3 px-4 rounded-lg transition-all ${
-                    alreadyClockedIn
-                      ? "bg-gray-200 text-gray-500 cursor-not-allowed"
-                      : "bg-green-500 hover:bg-green-600 text-white"
-                  }`}
-                >
-                  {btnLoading === "clock-in" ? (
-                    <span className="animate-pulse">Processing...</span>
-                  ) : (
-                    <>
-                      <span>Clock In</span>
-                      {alreadyClockedIn && <span className="ml-2 text-sm">✓ Done</span>}
-                    </>
-                  )}
-                </button>
-                <button
-                  disabled={!alreadyClockedIn || alreadyClockedOut || btnLoading}
-                  onClick={handleClockOut}
-                  className={`flex items-center justify-center py-3 px-4 rounded-lg transition-all ${
-                    !alreadyClockedIn || alreadyClockedOut
-                      ? "bg-gray-200 text-gray-500 cursor-not-allowed"
-                      : "bg-red-500 hover:bg-red-600 text-white"
-                  }`}
-                >
-                  {btnLoading === "clock-out" ? (
-                    <span className="animate-pulse">Processing...</span>
-                  ) : (
-                    <>
-                      <span>Clock Out</span>
-                      {alreadyClockedOut && <span className="ml-2 text-sm">✓ Done</span>}
-                    </>
-                  )}
+                <button onClick={() => setGeofenceError("")} className="text-amber-600 hover:text-amber-800">
+                  ✕
                 </button>
               </div>
-            </div>
+            )}
 
-            {/* Location Card */}
-            <div className="bg-white rounded-xl shadow p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold text-gray-700">Live Location</h2>
-                <FiMapPin className="text-blue-500" />
+            {/* Assigned geofence badge */}
+            {assignedGeofence && (
+              <div className="bg-blue-50 rounded-lg p-3 flex items-center gap-2 text-blue-800 text-sm shadow-sm">
+                <FiShield className="text-blue-500 text-lg" />
+                <span>
+                  Your assigned work zone: <strong>{assignedGeofence.name}</strong> (radius {assignedGeofence.radius}m)
+                </span>
               </div>
-              <div className="flex flex-col">
+            )}
+
+            {/* Three Cards Row */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {/* Status Card */}
+              <div className="bg-white rounded-2xl shadow-md p-6 hover:shadow-lg transition">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold text-gray-700">Today's Status</h3>
+                  <div className="p-2 bg-blue-100 rounded-full">
+                    <FiClock className="text-blue-600" />
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-xs text-gray-400 uppercase tracking-wide">Current Status</p>
+                    <p className="text-2xl font-bold text-gray-800">
+                      {alreadyClockedOut ? "Completed" : alreadyClockedIn ? "Working" : "Not Started"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-400 uppercase tracking-wide">Hours Today</p>
+                    <p className="text-3xl font-bold text-gray-900">
+                      {today?.totalHours != null ? formatHours(today.totalHours) : "—"}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="bg-white rounded-2xl shadow-md p-6">
+                <h3 className="font-semibold text-gray-700 mb-4">Actions</h3>
+                <div className="flex flex-col gap-3">
+                  <button
+                    onClick={handleClockIn}
+                    disabled={btnLoading === "clock-in" || alreadyClockedIn}
+                    className={`flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-medium transition ${
+                      alreadyClockedIn
+                        ? "bg-green-100 text-green-700 cursor-default"
+                        : "bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
+                    }`}
+                  >
+                    {btnLoading === "clock-in" ? (
+                      "Processing..."
+                    ) : (
+                      <>
+                        <FiLogIn size={18} />
+                        Clock In {alreadyClockedIn && "✓"}
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={handleClockOut}
+                    disabled={btnLoading === "clock-out" || !alreadyClockedIn || alreadyClockedOut}
+                    className={`flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-medium transition ${
+                      !alreadyClockedIn || alreadyClockedOut
+                        ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                        : "bg-red-600 hover:bg-red-700 text-white shadow-sm"
+                    }`}
+                  >
+                    {btnLoading === "clock-out" ? (
+                      "Processing..."
+                    ) : (
+                      <>
+                        <FiLogOut size={18} />
+                        Clock Out {alreadyClockedOut && "✓"}
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Location Card */}
+              <div className="bg-white rounded-2xl shadow-md p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold text-gray-700">Live Location</h3>
+                  <div className="p-2 bg-green-100 rounded-full">
+                    <FiMapPin className="text-green-600" />
+                  </div>
+                </div>
                 {location ? (
-                  <>
-                    <div className="flex items-center space-x-2">
-                      <span className="text-gray-500">Lat:</span>
-                      <span className="font-medium">{location.lat.toFixed(5)}</span>
-                    </div>
-                    <div className="flex items-center space-x-2 mt-1">
-                      <span className="text-gray-500">Lng:</span>
-                      <span className="font-medium">{location.lng.toFixed(5)}</span>
-                    </div>
-                    <p className="text-xs text-gray-400 mt-1">Updated every 30 seconds</p>
-                  </>
+                  <div className="text-sm space-y-1">
+                    <p>
+                      <span className="text-gray-500">Lat:</span>{" "}
+                      <span className="font-mono">{location.lat.toFixed(6)}</span>
+                    </p>
+                    <p>
+                      <span className="text-gray-500">Lng:</span>{" "}
+                      <span className="font-mono">{location.lng.toFixed(6)}</span>
+                    </p>
+                    <p className="text-xs text-gray-400 mt-2">Updated every 30 seconds</p>
+                  </div>
                 ) : (
-                  <p className="text-gray-500">Waiting for location...</p>
+                  <p className="text-sm text-gray-500">Waiting for location...</p>
                 )}
                 <button
                   onClick={() => setShowLocation(!showLocation)}
-                  className="mt-4 text-sm text-blue-500 hover:text-blue-700 self-start"
+                  className="mt-4 text-sm text-blue-600 hover:text-blue-800 font-medium"
                 >
                   {showLocation ? "Hide Map" : "Show on Map"}
                 </button>
                 {showLocation && location && (
-                  <div className="mt-3 h-40 bg-gray-100 rounded-lg overflow-hidden">
-                    <iframe
-                      title="location-map"
-                      width="100%"
-                      height="100%"
-                      frameBorder="0"
-                      scrolling="no"
-                      src={`https://maps.google.com/maps?q=${location.lat},${location.lng}&z=15&output=embed`}
-                    />
+                  <div className="mt-3 h-48 bg-gray-100 rounded-lg flex items-center justify-center text-gray-400 text-sm">
+                    Map preview (integrate react-leaflet or static map image)
                   </div>
                 )}
               </div>
             </div>
           </div>
-        </>
-      )}
+        )}
 
-      {/* Attendance Records Table - shown for both admin and employees */}
-      <div className="bg-white rounded-xl shadow overflow-hidden">
-        <div className="p-4 border-b">
-          <h2 className="text-lg font-semibold text-gray-700">
-            {isAdmin ? "All Attendance Records" : "Your Attendance History"}
-          </h2>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                {isAdmin && <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Employee</th>}
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Clock In</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Clock Out</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hours</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {records.length > 0 ? (
-                records.map((r) => (
-                  <tr key={r._id} className="hover:bg-gray-50">
-                    {isAdmin && <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{r.employee?.name}</td>}
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{format(parseISO(r.date), "dd MMM yyyy")}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {r.clockIn?.timestamp ? format(new Date(r.clockIn.timestamp), "hh:mm a") : "-"}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {r.clockOut?.timestamp ? format(new Date(r.clockOut.timestamp), "hh:mm a") : "-"}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatHours(r.totalHours)}</td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={isAdmin ? 5 : 4} className="px-6 py-4 text-center text-sm text-gray-500">
-                    No attendance records found
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        {/* Attendance Records Section */}
+        <div className="mt-10">
+          <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+            <h2 className="text-2xl font-bold text-gray-800">
+              {isAdmin ? "Attendance Records" : "Your Attendance History"}
+            </h2>
+            <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-4 py-2 shadow-sm">
+              <FiCalendar className="text-gray-500" />
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="border-none focus:outline-none text-sm"
+              />
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-md overflow-hidden">
+            {loadingHistory ? (
+              <div className="p-12 text-center">
+                <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-gray-300 border-t-blue-600"></div>
+                <p className="mt-3 text-gray-500">Loading records...</p>
+              </div>
+            ) : sortedDates.length === 0 ? (
+              <div className="p-12 text-center text-gray-400">
+                No attendance records for {format(parseISO(selectedDate), "dd MMM yyyy")}
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      {isAdmin && (
+                        <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Employee
+                        </th>
+                      )}
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Date
+                      </th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Clock In
+                      </th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Clock Out
+                      </th>
+                      <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Hours
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 bg-white">
+                    {sortedDates.map((date) => (
+                      <React.Fragment key={date}>
+                        {/* Date header row */}
+                        <tr className="bg-gray-100">
+                          <td
+                            colSpan={isAdmin ? 5 : 4}
+                            className="px-6 py-3 text-sm font-semibold text-gray-700"
+                          >
+                            {format(parseISO(date), "EEEE, dd MMM yyyy")}
+                          </td>
+                        </tr>
+                        {/* Records for this date */}
+                        {groupedRecords[date].map((record) => (
+                          <tr key={record._id} className="hover:bg-gray-50 transition">
+                            {isAdmin && (
+                              <td className="px-6 py-4 text-sm text-gray-900 whitespace-nowrap">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center">
+                                    <FiUser size={12} className="text-blue-600" />
+                                  </div>
+                                  {record.employee?.name}
+                                </div>
+                              </td>
+                            )}
+                            <td className="px-6 py-4 text-sm text-gray-600 whitespace-nowrap">
+                              {format(parseISO(record.date), "dd MMM yyyy")}
+                            </td>
+                            <td className="px-6 py-4 text-sm text-gray-800 whitespace-nowrap">
+                              {record.clockIn?.timestamp
+                                ? format(new Date(record.clockIn.timestamp), "hh:mm a")
+                                : "-"}
+                            </td>
+                            <td className="px-6 py-4 text-sm text-gray-800 whitespace-nowrap">
+                              {record.clockOut?.timestamp
+                                ? format(new Date(record.clockOut.timestamp), "hh:mm a")
+                                : "-"}
+                            </td>
+                            <td className="px-6 py-4 text-sm font-semibold text-gray-900 whitespace-nowrap">
+                              {formatHours(record.totalHours)}
+                            </td>
+                          </tr>
+                        ))}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

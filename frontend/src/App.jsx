@@ -31,6 +31,7 @@ import EmployeeHistoryPage from "./pages/EmployeeHistoryPage";
 import UploadExcelPage from "./pages/UploadExcelPage";
 import ViewUploadsPage from "./pages/ViewUploadsPage";
 import SalarySlip from "./pages/SalarySlip";
+import BillingPage from "./pages/BillingPage";
 
 // COMPONENTS
 import Layout from "./components/Shared/Layout";
@@ -144,7 +145,14 @@ const AppRoutes = () => {
         <Route path="alerts" element={<AlertsPage />} />
         <Route path="upload-excel" element={<UploadExcelPage />} />
         <Route path="uploads" element={<ViewUploadsPage />} />
-
+	<Route
+  path="billing"
+  element={
+    <ProtectedRoute roles={["admin"]}>
+      <BillingPage />
+    </ProtectedRoute>
+  }
+/>
       </Route>
 
       {/* FALLBACK */}

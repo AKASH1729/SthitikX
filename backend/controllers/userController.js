@@ -1,16 +1,16 @@
 /**
- * User Controller — FIXED VERSION (NO fieldLocation) 🚀
+ * User Controller — FINAL VERSION (WITH EMPLOYEE LIMIT 🚀)
  */
 
 const User = require("../models/User");
-
 const Company = require("../models/Company");
+const mongoose = require("mongoose");
+
 /* =========================================
    📥 GET USERS
 ========================================= */
 const getUsers = async (req, res) => {
   try {
-    /* 🔐 AUTH CHECK */
     if (!req.user || !req.user.companyId) {
       return res.status(401).json({
         success: false,
@@ -18,20 +18,14 @@ const getUsers = async (req, res) => {
       });
     }
 
-    const {
-      search = "",
-      page = 1,
-      limit = 20,
-    } = req.query;
+    const { search = "", page = 1, limit = 20 } = req.query;
 
-    /* 🔥 BASE QUERY */
     const query = {
       role: "employee",
       companyId: req.user.companyId,
     };
 
-    /* 🔍 SEARCH (SAFE) */
-    if (search && search.trim()) {
+    if (search.trim()) {
       query.$or = [
         { name: { $regex: search.trim(), $options: "i" } },
         { email: { $regex: search.trim(), $options: "i" } },
@@ -39,16 +33,13 @@ const getUsers = async (req, res) => {
       ];
     }
 
-    /* 📊 FETCH USERS */
     const users = await User.find(query)
-      .populate("assignedGeofence", "name") // ✅ ONLY THIS
-      // ❌ REMOVED fieldLocation populate
-      .limit(Number(limit) || 20)
+      .populate("assignedGeofence", "name")
+      .limit(Number(limit))
       .skip((page - 1) * limit)
       .sort({ createdAt: -1 })
       .select("-password -refreshToken");
 
-    /* 📦 RESPONSE */
     res.json({
       success: true,
       users,
@@ -56,16 +47,15 @@ const getUsers = async (req, res) => {
 
   } catch (error) {
     console.error("🔥 GET USERS ERROR:", error);
-
     res.status(500).json({
       success: false,
-      message: error.message || "Server error",
+      message: error.message,
     });
   }
 };
 
 /* =========================================
-   ➕ CREATE USER
+   ➕ CREATE USER (LIMIT LOGIC ADDED)
 ========================================= */
 const createUser = async (req, res) => {
   try {
@@ -84,6 +74,39 @@ const createUser = async (req, res) => {
       });
     }
 
+    /* 🔥 GET COMPANY */
+    const company = await Company.findById(req.user.companyId);
+
+    if (!company) {
+      return res.status(404).json({
+        message: "Company not found",
+      });
+    }
+
+    /* 👥 COUNT EMPLOYEES */
+    const employeeCount = await User.countDocuments({
+      companyId: company._id,
+      role: "employee",
+    });
+
+    const maxAllowed =
+      company.baseEmployees + (company.maxExtraEmployees || 10);
+
+    /* ❌ HARD BLOCK */
+    if (employeeCount >= maxAllowed) {
+      return res.status(400).json({
+        success: false,
+        message: `❌ Max employee limit reached (${maxAllowed}). Upgrade plan.`,
+      });
+    }
+
+    /* ⚠ WARNING */
+    let warning = null;
+    if (employeeCount >= company.baseEmployees) {
+      warning = `⚠ Extra employee added (${employeeCount}/${maxAllowed}). Charges will apply.`;
+    }
+
+    /* ➕ CREATE USER */
     const user = await User.create({
       name: name.trim(),
       email: email.trim().toLowerCase(),
@@ -92,18 +115,18 @@ const createUser = async (req, res) => {
       department,
       phone,
       assignedGeofence: assignedGeofence || undefined,
-      companyId: req.user.companyId,
+      companyId: company._id,
     });
 
     res.status(201).json({
       success: true,
       message: "Employee created",
       user,
+      warning,
     });
 
   } catch (error) {
     console.error("🔥 CREATE USER ERROR:", error);
-
     res.status(500).json({
       message: error.message,
     });
@@ -115,14 +138,12 @@ const createUser = async (req, res) => {
 ========================================= */
 const updateUser = async (req, res) => {
   try {
-    const updates = req.body;
-
     const user = await User.findOneAndUpdate(
       {
         _id: req.params.id,
         companyId: req.user.companyId,
       },
-      updates,
+      req.body,
       { new: true }
     ).populate("assignedGeofence", "name");
 
@@ -146,7 +167,6 @@ const updateUser = async (req, res) => {
 /* =========================================
    ❌ DELETE USER
 ========================================= */
-
 const deleteUser = async (req, res) => {
   try {
     const user = await User.findOneAndDelete({
@@ -170,11 +190,10 @@ const deleteUser = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
-/* =========================================
-   👤 GET LOGGED-IN USER PROFILE
-========================================= */
-const mongoose = require("mongoose");
 
+/* =========================================
+   👤 GET PROFILE
+========================================= */
 const getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select("-password");
@@ -186,16 +205,9 @@ const getMe = async (req, res) => {
     let company = null;
 
     if (user.companyId) {
-      // 🔥 STEP 1: ensure ObjectId
-      const companyId = new mongoose.Types.ObjectId(user.companyId);
-
-      // 🔥 STEP 2: fetch full company
-      const c = await Company.findById(companyId);
-
-      console.log("👉 COMPANY RAW:", c);
+      const c = await Company.findById(user.companyId);
 
       if (c) {
-        // 🔥 STEP 3: map correct expiry field
         const expiry =
           c.plan === "trial"
             ? c.trialExpiresAt
@@ -206,17 +218,18 @@ const getMe = async (req, res) => {
           name: c.name,
           plan: c.plan,
           subscriptionExpiry: expiry,
+          daysLeft: c.getDaysLeft ? c.getDaysLeft() : 0,
+          baseEmployees: c.baseEmployees,
+          maxExtraEmployees: c.maxExtraEmployees || 10,
         };
       }
     }
-
-    console.log("👉 FINAL COMPANY:", company);
 
     res.json({
       name: user.name,
       email: user.email,
       role: user.role,
-      company: company || null,
+      company,
     });
 
   } catch (error) {
@@ -224,6 +237,7 @@ const getMe = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
 module.exports = {
   getUsers,
   createUser,

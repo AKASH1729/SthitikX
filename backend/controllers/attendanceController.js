@@ -212,49 +212,54 @@ const getTodayAttendance = async (req, res) => {
 ========================================= */
 const getAttendance = async (req, res) => {
   try {
-    const { startDate, endDate, employeeId, page = 1, limit = 30 } = req.query;
+    const { employeeId, page = 1, limit = 30, date } = req.query;
 
     const query = {
       companyId: req.user.companyId,
     };
 
+    // 🔐 ROLE FILTER
     if (req.user.role === "employee") {
       query.employee = req.user._id;
     } else if (employeeId) {
       query.employee = employeeId;
     }
 
-    if (startDate || endDate) {
-      query.date = {};
-      if (startDate) query.date.$gte = startDate;
-      if (endDate) query.date.$lte = endDate;
+    // 🔥 FILTER BY SINGLE DATE (optional)
+    if (date) {
+      query.date = date; // already stored as YYYY-MM-DD ✅
     }
-
-    const total = await Attendance.countDocuments(query);
 
     const records = await Attendance.find(query)
       .populate("employee", "name email employeeId department")
       .populate("geofence", "name")
-      .sort({ date: -1 })
-      .limit(Number(limit))
-      .skip((page - 1) * limit);
+      .sort({ date: -1, "clockIn.timestamp": 1 });
+
+    /* =========================
+       🔥 GROUP BY DATE
+    ========================= */
+    const grouped = {};
+
+    records.forEach((rec) => {
+      const dateKey = rec.date; // already correct format
+
+      if (!grouped[dateKey]) {
+        grouped[dateKey] = [];
+      }
+
+      grouped[dateKey].push(rec);
+    });
 
     res.json({
       success: true,
-      records,
-      pagination: {
-        total,
-        page: Number(page),
-        pages: Math.ceil(total / limit),
-      },
+      data: grouped,
     });
 
   } catch (error) {
-    console.error("❌ GET ATTENDANCE ERROR:", error.message);
+    console.error("GET ATTENDANCE ERROR:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
 module.exports = {
   clockIn,
   clockOut,

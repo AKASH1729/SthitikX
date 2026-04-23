@@ -1,6 +1,7 @@
 /**
  * LiveMapLayout — FULL PAGE, FULLY RESPONSIVE ✨
  * Covers entire screen, looks great on mobile & desktop.
+ * Removed all restriction messages and icons for a clean, minimalist UI.
  */
 
 import React, { useState, useEffect } from "react";
@@ -8,10 +9,6 @@ import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../context/AuthContext";
 import api from "../services/api";
-import { 
-  FiMapPin, FiClock, FiDownload, FiUser, FiCalendar, 
-  FiBarChart2, FiActivity, FiTarget 
-} from "react-icons/fi";
 
 export default function LiveMapLayout() {
   const { user } = useAuth();
@@ -24,19 +21,6 @@ export default function LiveMapLayout() {
   const [loading, setLoading] = useState(false);
   const [isFetchingEmployees, setIsFetchingEmployees] = useState(true);
 
-  // Role protection
-  if (user?.role === "employee") {
-    return (
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="min-h-screen flex items-center justify-center text-red-500 font-semibold text-xl p-4 text-center"
-      >
-        ⛔ Access Denied – Admin only.
-      </motion.div>
-    );
-  }
-
   // Fetch employees
   useEffect(() => {
     const fetchEmployees = async () => {
@@ -44,7 +28,7 @@ export default function LiveMapLayout() {
         const { data } = await api.get("/v2/users?limit=100");
         setEmployees(data.users || []);
       } catch (err) {
-        console.log("❌ Failed to load employees");
+        console.log("Failed to load employees");
       } finally {
         setIsFetchingEmployees(false);
       }
@@ -54,7 +38,7 @@ export default function LiveMapLayout() {
 
   const handleDateChange = (value) => {
     if (value > today) {
-      alert("❌ Future dates are not allowed");
+      alert("Future dates are not allowed");
       return;
     }
     setDate(value);
@@ -62,7 +46,7 @@ export default function LiveMapLayout() {
 
   const handleDownload = async () => {
     if (!selectedEmployee) {
-      alert("👤 Please select an employee first");
+      alert("Please select an employee first");
       return;
     }
     setLoading(true);
@@ -78,7 +62,7 @@ export default function LiveMapLayout() {
       a.click();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      alert("❌ Download failed. Please try again.");
+      alert("Download failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -95,59 +79,41 @@ export default function LiveMapLayout() {
   };
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-gray-50 to-white flex flex-col">
-      {/* Header Card - sticky but not covering full screen */}
+    <div className="min-h-screen w-full bg-gradient-to-br from-slate-50 to-white flex flex-col">
+      {/* Header Card - minimal sticky header */}
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ type: "spring", stiffness: 120, damping: 15 }}
-        className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-gray-200 shadow-sm"
+        className="sticky top-0 z-20 bg-white/80 backdrop-blur-md border-b border-slate-200 shadow-sm"
       >
         <div className="w-full px-4 sm:px-6 py-4">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-            {/* Left side */}
-            <div className="w-full sm:w-auto">
-              <motion.h1 
-                className="text-xl sm:text-2xl md:text-3xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent flex items-center gap-2 flex-wrap"
-                variants={fadeInUp}
-                initial="hidden"
-                animate="visible"
-              >
-                <FiMapPin className="text-blue-500 flex-shrink-0" /> 
-                <span>Live Tracking Hub</span>
-              </motion.h1>
-              <motion.p 
-                className="text-xs sm:text-sm text-gray-500 flex items-center gap-2 mt-0.5"
-                variants={fadeInUp}
-                initial="hidden"
-                animate="visible"
-              >
-                <FiActivity className="text-green-500" /> Real-time workforce location intelligence
-              </motion.p>
-              <motion.p 
-                className="text-xs text-gray-400 mt-0.5"
-                variants={fadeInUp}
-                initial="hidden"
-                animate="visible"
-              >
-                {user?.role === "super_admin" ? "👑 Super Admin" : `🏢 Company: ${user?.companyId}`}
-              </motion.p>
-            </div>
+            {/* Left side - clean title only */}
+            <motion.div
+              variants={fadeInUp}
+              initial="hidden"
+              animate="visible"
+              className="w-full sm:w-auto"
+            >
+              <h1 className="text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight text-slate-800">
+                Live Tracking
+              </h1>
+            </motion.div>
 
             {/* Right side - controls wrap on mobile */}
-            <motion.div 
+            <motion.div
               className="flex flex-wrap gap-2 sm:gap-3 items-center w-full sm:w-auto"
               variants={staggerContainer}
               initial="hidden"
               animate="visible"
             >
               {/* Employee Selector */}
-              <motion.div variants={fadeInUp} className="relative flex-1 sm:flex-initial min-w-[140px]">
-                <FiUser className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 text-sm" />
+              <motion.div variants={fadeInUp} className="relative flex-1 sm:flex-initial min-w-[160px]">
                 <select
                   value={selectedEmployee}
                   onChange={(e) => setSelectedEmployee(e.target.value)}
-                  className="w-full pl-9 pr-8 py-2 bg-white border border-gray-300 rounded-xl text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all appearance-none cursor-pointer hover:border-blue-400 text-sm"
+                  className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all appearance-none cursor-pointer hover:border-blue-300 text-sm shadow-sm"
                 >
                   <option value="">Select Employee</option>
                   {employees.map(emp => (
@@ -156,23 +122,21 @@ export default function LiveMapLayout() {
                     </option>
                   ))}
                 </select>
-                <div className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none text-gray-400 text-xs">▼</div>
                 {isFetchingEmployees && (
                   <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
-                    <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                    <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
                   </div>
                 )}
               </motion.div>
 
               {/* Date Picker */}
               <motion.div variants={fadeInUp} className="relative flex-1 sm:flex-initial">
-                <FiCalendar className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 text-sm" />
                 <input
                   type="date"
                   value={date}
                   max={today}
                   onChange={(e) => handleDateChange(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 bg-white border border-gray-300 rounded-xl text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm"
+                  className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm shadow-sm"
                 />
               </motion.div>
 
@@ -181,16 +145,15 @@ export default function LiveMapLayout() {
                 variants={fadeInUp}
                 onClick={handleDownload}
                 disabled={loading}
-                className="flex-1 sm:flex-initial px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl text-white font-medium shadow-md hover:shadow-lg flex items-center justify-center gap-2 disabled:opacity-70 transition-all text-sm"
+                className="flex-1 sm:flex-initial px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl text-white font-medium shadow-md hover:shadow-lg disabled:opacity-70 transition-all text-sm"
                 whileHover={{ scale: 1.02 }}
                 whileTap={{ scale: 0.98 }}
               >
                 {loading ? (
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mx-auto" />
                 ) : (
-                  <FiDownload />
+                  "Export CSV"
                 )}
-                {loading ? "Downloading..." : "Export CSV"}
               </motion.button>
             </motion.div>
           </div>
@@ -199,24 +162,24 @@ export default function LiveMapLayout() {
 
       {/* Main Content - fills remaining space */}
       <div className="flex-1 w-full px-4 sm:px-6 py-4 sm:py-6">
-        {/* Tabs - scrollable on mobile if needed */}
-        <motion.div 
+        {/* Tabs - scrollable on mobile, clean text only */}
+        <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="flex flex-nowrap overflow-x-auto gap-0 border-b border-gray-200 mb-4 pb-0.5 scrollbar-thin"
+          className="flex flex-nowrap overflow-x-auto gap-0 border-b border-slate-200 mb-4 pb-0.5 scrollbar-thin"
         >
-          <Tab to="live" icon={<FiTarget />}>📍 Live Tracking</Tab>
-          <Tab to="timeline" icon={<FiClock />}>🕒 Timeline History</Tab>
-          <Tab to="dashboard" icon={<FiBarChart2 />}>📊 Analytics</Tab>
+          <Tab to="live">Live Tracking</Tab>
+          <Tab to="timeline">Timeline History</Tab>
+          <Tab to="dashboard">Analytics</Tab>
         </motion.div>
 
-        {/* Content Card - takes full width, no overflow */}
+        {/* Content Card - full width, no overflow */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2, type: "spring", stiffness: 100 }}
-          className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden"
+          className="bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden"
         >
           <div className="p-4 sm:p-5 md:p-6">
             <AnimatePresence mode="wait">
@@ -244,21 +207,20 @@ export default function LiveMapLayout() {
 }
 
 /* ================= TAB COMPONENT WITH SMOOTH UNDERLINE ================= */
-const Tab = ({ to, children, icon }) => {
+const Tab = ({ to, children }) => {
   return (
     <NavLink to={to} end>
       {({ isActive }) => (
         <motion.div
-          className={`relative px-3 sm:px-5 py-2.5 rounded-t-lg text-sm font-medium transition-all duration-200 flex items-center gap-1 sm:gap-2 cursor-pointer whitespace-nowrap ${
-            isActive 
-              ? "text-blue-600" 
-              : "text-gray-500 hover:text-gray-800"
+          className={`relative px-4 sm:px-6 py-2.5 rounded-t-lg text-sm font-medium transition-all duration-200 cursor-pointer whitespace-nowrap ${
+            isActive
+              ? "text-blue-600"
+              : "text-slate-500 hover:text-slate-800"
           }`}
           whileHover={{ y: -1 }}
           whileTap={{ y: 0 }}
         >
-          {icon && <span className="text-sm sm:text-base">{icon}</span>}
-          <span>{children}</span>
+          {children}
           {isActive && (
             <motion.div
               layoutId="activeTabUnderline"

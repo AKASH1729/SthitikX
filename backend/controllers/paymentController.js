@@ -1,17 +1,12 @@
 /**
- * Payment Controller — FINAL FIXED VERSION 🚀
+ * Payment Controller — FINAL PRODUCTION VERSION 🚀
  */
 
 const Razorpay = require("razorpay");
 const crypto = require("crypto");
 const Company = require("../models/Company");
 const User = require("../models/User");
-const { pendingUsers } = require("./authController"); // ✅ IMPORTANT
-
-/* ================= ENV CHECK ================= */
-if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
-  throw new Error("❌ Razorpay keys missing in .env");
-}
+const { pendingUsers } = require("./authController");
 
 /* ================= INIT ================= */
 const razorpay = new Razorpay({
@@ -37,14 +32,16 @@ const createOrder = async (req, res) => {
 
       const amount = plans[plan];
 
-      if (!amount) {
-        return res.status(400).json({ message: "Invalid plan" });
-      }
-
       const order = await razorpay.orders.create({
         amount: amount * 100,
         currency: "INR",
-        receipt: `s_${Date.now()}`, // ✅ short
+        receipt: `s_${Date.now()}`,
+
+        // 🔥 IMPORTANT
+        notes: {
+          type: "signup",
+          plan,
+        },
       });
 
       return res.json({
@@ -57,10 +54,6 @@ const createOrder = async (req, res) => {
     /* ================= BILLING FLOW ================= */
     const company = await Company.findById(req.user.companyId);
 
-    if (!company) {
-      return res.status(404).json({ message: "Company not found" });
-    }
-
     const employeeCount = await User.countDocuments({
       companyId: company._id,
       role: "employee",
@@ -68,30 +61,42 @@ const createOrder = async (req, res) => {
 
     const bill = company.calculateBill(employeeCount);
 
+    /* 🔥 DEBUG LOGS */
+    console.log("👥 Employees:", employeeCount);
+    console.log("📦 Included:", company.baseEmployees);
+    console.log("➕ Extra:", bill.extraEmployees);
+    console.log("💰 Extra Cost:", bill.extraCost);
+    console.log("💰 TOTAL:", bill.total);
+
     const order = await razorpay.orders.create({
       amount: bill.total * 100,
       currency: "INR",
       receipt: `b_${Date.now()}`,
+
+      // 🔥 CRITICAL FOR WEBHOOK
+      notes: {
+        type: "renewal",
+        companyId: company._id.toString(),
+        employees: employeeCount,
+        extraEmployees: bill.extraEmployees,
+      },
     });
 
     res.json({
       success: true,
       order,
       amount: bill.total,
-      employees: employeeCount,
+      breakdown: bill,
     });
 
   } catch (err) {
-    console.error("RAZORPAY ERROR:", err);
-
-    res.status(500).json({
-      message: err?.error?.description || err.message || "Order failed",
-    });
+    console.error("ORDER ERROR:", err);
+    res.status(500).json({ message: "Order failed" });
   }
 };
 
 /* =========================
-   ✅ VERIFY PAYMENT (SAFE)
+   ✅ VERIFY PAYMENT
 ========================= */
 const verifyPayment = async (req, res) => {
   try {
@@ -111,27 +116,24 @@ const verifyPayment = async (req, res) => {
     if (expected !== razorpay_signature) {
       return res.status(400).json({
         success: false,
-        message: "Payment verification failed",
+        message: "Invalid signature",
       });
     }
 
-    /* 🔥 DO NOT CREATE COMPANY HERE */
+    // ❌ DO NOT update DB here
     res.json({
       success: true,
-      message: "Payment verified (waiting webhook)",
+      message: "Verified (waiting webhook)",
     });
 
   } catch (err) {
     console.error("VERIFY ERROR:", err);
-
-    res.status(500).json({
-      message: "Verification failed",
-    });
+    res.status(500).json({ message: "Verification failed" });
   }
 };
 
 /* =========================
-   🔔 WEBHOOK (REAL SOURCE)
+   🔔 WEBHOOK (MOST IMPORTANT)
 ========================= */
 const handleWebhook = async (req, res) => {
   try {
@@ -151,38 +153,77 @@ const handleWebhook = async (req, res) => {
     if (event.event === "payment.captured") {
       const payment = event.payload.payment.entity;
 
-      const email = payment.email || payment.notes?.email;
+      const type = payment.notes?.type;
 
-      const data = pendingUsers.get(email);
-      if (!data) return res.json({ ok: true });
+      /* =========================
+         🔥 RENEWAL FLOW
+      ========================= */
+      if (type === "renewal") {
+        const companyId = payment.notes.companyId;
 
-      /* ✅ CREATE COMPANY */
-      const company = await Company.create({
-        name: data.companyName,
-        email,
-        plan: data.plan,
-        planPrice: payment.amount / 100,
-        baseEmployees:
-          data.plan === "pro" ? 50 :
-          data.plan === "business" ? 100 :
-          data.plan === "premium" ? 200 : 700,
-        extraEmployeePrice: 30,
-        subscriptionExpiresAt: new Date(
-          Date.now() + 30 * 24 * 60 * 60 * 1000
-        ),
-      });
+        const company = await Company.findById(companyId);
+        if (!company) return res.json({ ok: true });
 
-      await User.create({
-        name: data.adminName,
-        email,
-        password: data.password,
-        role: "admin",
-        companyId: company._id,
-      });
+        const now = new Date();
 
-      pendingUsers.delete(email);
+        if (company.subscriptionExpiresAt > now) {
+          // 🔥 extend
+          company.subscriptionExpiresAt = new Date(
+            company.subscriptionExpiresAt.getTime() +
+              30 * 24 * 60 * 60 * 1000
+          );
+        } else {
+          // 🔥 new cycle
+          company.subscriptionExpiresAt = new Date(
+            now.getTime() + 30 * 24 * 60 * 60 * 1000
+          );
+        }
 
-      console.log("✅ Company created via webhook");
+        company.planPrice = payment.amount / 100;
+
+        await company.save();
+
+        console.log("✅ Subscription renewed");
+
+        return res.json({ success: true });
+      }
+
+      /* =========================
+         🆕 SIGNUP FLOW
+      ========================= */
+      if (type === "signup") {
+        const email = payment.email;
+
+        const data = pendingUsers.get(email);
+        if (!data) return res.json({ ok: true });
+
+        const company = await Company.create({
+          name: data.companyName,
+          email,
+          plan: data.plan,
+          planPrice: payment.amount / 100,
+          baseEmployees:
+            data.plan === "pro" ? 50 :
+            data.plan === "business" ? 100 :
+            data.plan === "premium" ? 200 : 700,
+          extraEmployeePrice: 30,
+          subscriptionExpiresAt: new Date(
+            Date.now() + 30 * 24 * 60 * 60 * 1000
+          ),
+        });
+
+        await User.create({
+          name: data.adminName,
+          email,
+          password: data.password,
+          role: "admin",
+          companyId: company._id,
+        });
+
+        pendingUsers.delete(email);
+
+        console.log("✅ Company created");
+      }
     }
 
     res.json({ success: true });

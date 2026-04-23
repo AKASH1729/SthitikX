@@ -28,7 +28,7 @@ const locationLogSchema = new mongoose.Schema(
     },
 
     /* ==============================
-       📍 GEO LOCATION (Mongo GeoJSON)
+       📍 GEO LOCATION
     ============================== */
     location: {
       type: {
@@ -46,14 +46,14 @@ const locationLogSchema = new mongoose.Schema(
     lng: { type: Number, required: true },
 
     /* ==============================
-       📡 EXTRA LOCATION DATA
+       📡 EXTRA DATA
     ============================== */
     accuracy: { type: Number, default: null },
     speed: { type: Number, default: 0 },
     heading: { type: Number, default: null },
 
     /* ==============================
-       📅 DATE INFO
+       📅 DATE
     ============================== */
     date: { type: String, required: true },
 
@@ -64,7 +64,7 @@ const locationLogSchema = new mongoose.Schema(
     },
 
     /* ==============================
-       🔥 OFFLINE SYNC SUPPORT
+       🔥 OFFLINE SYNC
     ============================== */
     deviceId: {
       type: String,
@@ -77,16 +77,16 @@ const locationLogSchema = new mongoose.Schema(
     },
 
     /* ==============================
-       📶 NETWORK QUALITY (NEW)
+       📶 NETWORK
     ============================== */
     networkQuality: {
       type: String,
-      enum: ['good', 'weak', 'none'],
-      default: 'good',
+      enum: ["good", "weak", "none"],
+      default: "good",
     },
 
     /* ==============================
-       📍 GEOFENCE + ATTENDANCE
+       📍 GEOFENCE
     ============================== */
     isInsideGeofence: {
       type: Boolean,
@@ -104,13 +104,13 @@ const locationLogSchema = new mongoose.Schema(
 );
 
 /* ==============================
-   🔥 INDEXES (PERFORMANCE + SAFETY)
+   🔥 INDEXES
 ============================== */
 
 // 🌍 Geo index
 locationLogSchema.index({ location: "2dsphere" });
 
-// 🔥 Multi-tenant queries
+// 🚀 Multi-tenant fast queries
 locationLogSchema.index({
   companyId: 1,
   employeeId: 1,
@@ -118,21 +118,24 @@ locationLogSchema.index({
   timestamp: 1,
 });
 
-// 🔥 Fast latest location query
+// 🚀 Latest location fast lookup
 locationLogSchema.index({
   companyId: 1,
   employee: 1,
   timestamp: -1,
 });
 
-// 🔥 CRITICAL: Prevent duplicate sync
+// 🔒 Prevent duplicate sync
+locationLogSchema.index({ syncId: 1 }, { unique: true });
+
+// 🧹 AUTO DELETE AFTER 40 DAYS (FINAL FIX)
 locationLogSchema.index(
-  { syncId: 1 },
-  { unique: true }
+  { timestamp: 1 },
+  { expireAfterSeconds: 40 * 24 * 60 * 60 } // ✅ 40 days
 );
 
 /* ==============================
-   📌 GET DAILY ROUTE
+   📌 DAILY ROUTE
 ============================== */
 locationLogSchema.statics.getDailyRoute = async function (
   employeeId,
@@ -169,10 +172,10 @@ locationLogSchema.statics.calculateDistance = function (locations) {
 };
 
 /* ==============================
-   📌 HAVERSINE DISTANCE
+   📌 HAVERSINE
 ============================== */
 function haversineDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // km
+  const R = 6371;
 
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);

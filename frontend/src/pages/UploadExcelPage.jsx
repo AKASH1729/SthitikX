@@ -91,7 +91,7 @@ export default function UploadExcelPage() {
       formData.append("category", category);
       formData.append("userId", userId);
 
-      const res = await api.post("/upload-excel", formData);;
+      const res = await api.post("/upload-excel", formData);
 
       setMessage(`✅ Successfully uploaded ${res.data.count || 0} records`);
       setFile(null);

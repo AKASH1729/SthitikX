@@ -10,7 +10,7 @@ const { protect } = require("../middleware/auth");
 const router = express.Router();
 
 /* ==============================
-   ✅ MULTER CONFIG
+   ✅ MULTER CONFIG (5MB LIMIT)
 ============================== */
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -25,7 +25,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024 }, // ✅ 5MB
 });
 
 /* ==============================
@@ -39,13 +39,14 @@ router.get("/users", protect, async (req, res) => {
     }).select("_id name employeeId email");
 
     res.json({ success: true, users });
-  } catch {
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 });
 
 /* ==============================
-   ✅ UPLOAD EXCEL (FINAL)
+   ✅ UPLOAD EXCEL (FINAL FIX)
 ============================== */
 router.post(
   "/upload-excel",
@@ -53,6 +54,10 @@ router.post(
   upload.single("file"),
   async (req, res) => {
     try {
+      // 🔥 DEBUG (remove later if needed)
+      console.log("BODY:", req.body);
+      console.log("FILE:", req.file);
+
       if (!req.file) {
         return res.status(400).json({ message: "No file uploaded" });
       }
@@ -60,7 +65,7 @@ router.post(
       const loggedInUser = req.user;
       let userId;
 
-      // ✅ FIXED ROLE
+      // ✅ ROLE HANDLING
       if (
         loggedInUser.role === "admin" ||
         loggedInUser.role === "super_admin"
@@ -73,20 +78,20 @@ router.post(
         userId = loggedInUser._id;
       }
 
-      const category = (req.body.category || "").toLowerCase();
+      // ✅ CATEGORY VALIDATION
+      const category = (req.body.category || "").toLowerCase().trim();
       if (!category) {
         return res.status(400).json({ message: "Category required" });
       }
 
+      // ✅ USER VALIDATION
       const userExists = await User.findById(userId);
       if (!userExists) {
         return res.status(400).json({ message: "User not found" });
       }
 
-      if (
-        userExists.companyId.toString() !==
-        loggedInUser.companyId.toString()
-      ) {
+      // ✅ SAFE COMPANY CHECK
+      if (!userExists.companyId.equals(loggedInUser.companyId)) {
         return res.status(403).json({ message: "Unauthorized" });
       }
 
@@ -96,11 +101,11 @@ router.post(
       const rows = xlsx.utils.sheet_to_json(sheet);
 
       if (!rows.length) {
-        fs.unlink(req.file.path, () => {});
+        fs.unlinkSync(req.file.path);
         return res.status(400).json({ message: "Empty file" });
       }
 
-      /* ===== TTL LOGIC ===== */
+      /* ===== TTL (10 DAYS) ===== */
       const now = new Date();
       const expiresAt = new Date(
         now.getTime() + 10 * 24 * 60 * 60 * 1000
@@ -125,10 +130,12 @@ router.post(
         expiresAt,
       });
 
-      // ✅ DELETE FILE AFTER USE
-      fs.unlink(req.file.path, () => {});
+      // ✅ DELETE FILE AFTER SUCCESS
+      if (fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
 
-      res.json({
+      return res.json({
         success: true,
         message: "Upload successful",
         count: rows.length,
@@ -136,13 +143,22 @@ router.post(
       });
 
     } catch (err) {
-      console.error(err);
+      console.error("UPLOAD ERROR:", err);
 
-      if (req.file?.path) {
-        fs.unlink(req.file.path, () => {});
+      // ✅ CLEANUP ON ERROR
+      if (req.file?.path && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
       }
 
-      res.status(500).json({
+      // 🔥 HANDLE FILE SIZE ERROR
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).json({
+          success: false,
+          message: "File too large. Max size is 5MB",
+        });
+      }
+
+      return res.status(500).json({
         success: false,
         message: err.message,
       });
