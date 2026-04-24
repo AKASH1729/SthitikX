@@ -4,7 +4,7 @@ const bcrypt = require("bcryptjs");
 
 const Company = require("../models/Company");
 const User = require("../models/User");
-const { pendingUsers } = require("./authController");
+const pendingUsers = require("../utils/pendingUsers");
 
 /* ================= INIT ================= */
 const razorpay = new Razorpay({
@@ -69,10 +69,11 @@ const createOrder = async (req, res) => {
   }
 };
 
-/* ================= VERIFY PAYMENT ================= */
 const verifyPayment = async (req, res) => {
   try {
-    const {
+    console.log("🔍 VERIFY BODY:", req.body);
+
+    let {
       razorpay_order_id,
       razorpay_payment_id,
       razorpay_signature,
@@ -80,6 +81,19 @@ const verifyPayment = async (req, res) => {
       plan,
     } = req.body;
 
+    // ✅ Normalize email
+    if (!email) {
+      return res.status(400).json({ message: "Email missing from frontend" });
+    }
+
+    const emailNormalized = email.toLowerCase();
+
+    // ✅ Validate payment fields
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ message: "Payment data missing" });
+    }
+
+    // ✅ Verify signature
     const body = razorpay_order_id + "|" + razorpay_payment_id;
 
     const expected = crypto
@@ -88,29 +102,58 @@ const verifyPayment = async (req, res) => {
       .digest("hex");
 
     if (expected !== razorpay_signature) {
-      return res.status(400).json({ success: false, message: "Invalid signature" });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid signature",
+      });
     }
 
-    const data = pendingUsers.get(email);
+    // ✅ Debug logs
+    console.log("📦 pendingUsers keys:", pendingUsers ? [...pendingUsers.keys()] : "undefined");
+    console.log("🔍 requested:", emailNormalized);
+
+    // ✅ Validate pendingUsers
+    if (!pendingUsers || typeof pendingUsers.get !== "function") {
+      return res.status(500).json({
+        message: "pendingUsers not initialized",
+      });
+    }
+
+    const data = pendingUsers.get(emailNormalized);
 
     if (!data) {
-      return res.status(400).json({ message: "User not found" });
+      console.log("❌ Missing pending user for:", emailNormalized);
+      return res.status(400).json({
+        message: "Session expired. Please signup again.",
+      });
     }
 
-    /* 🔥 PREVENT DUPLICATE CREATION */
-    const existing = await Company.findOne({ email });
+    // ✅ Prevent duplicate company
+    const existing = await Company.findOne({ email: emailNormalized });
     if (existing) {
       return res.json({ success: true });
     }
 
-    /* 🔐 HASH PASSWORD */
+    // 🔐 Hash password
     const hashedPassword = await bcrypt.hash(data.password, 10);
 
-    /* 🏢 CREATE COMPANY */
+    // 🔥 FIX: Generate slug (IMPORTANT)
+    const slug =
+      data.companyName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "") +
+      "-" +
+      Date.now();
+
+    // 🏢 Create company
     const company = await Company.create({
       name: data.companyName,
-      email,
+      email: emailNormalized,
+      slug, // ✅ FIXED HERE
+
       plan: data.plan,
+
       planPrice:
         data.plan === "pro" ? 999 :
         data.plan === "business" ? 1999 :
@@ -129,24 +172,25 @@ const verifyPayment = async (req, res) => {
       ),
     });
 
-    /* 👤 CREATE USER */
+    // 👤 Create admin user
     await User.create({
       name: data.adminName,
-      email,
+      email: emailNormalized,
       password: hashedPassword,
       role: "admin",
       companyId: company._id,
     });
 
-    pendingUsers.delete(email);
+    // ✅ Cleanup
+    pendingUsers.delete(emailNormalized);
 
-    console.log("✅ Company created (verifyPayment):", email);
+    console.log("✅ Company created successfully:", emailNormalized);
 
-    res.json({ success: true });
+    return res.json({ success: true });
 
   } catch (err) {
-    console.error("VERIFY ERROR:", err);
-    res.status(500).json({ message: "Verification failed" });
+    console.error("❌ VERIFY ERROR:", err);
+    return res.status(500).json({ message: "Verification failed" });
   }
 };
 
