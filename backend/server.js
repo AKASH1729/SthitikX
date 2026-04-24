@@ -1,5 +1,5 @@
 /**
- * GeoTrack Pro - Main Server Entry Point (FINAL SaaS VERSION 🔥)
+ * GeoTrack Pro - Main Server Entry Point (FINAL FIXED VERSION 🚀)
  */
 
 require('dotenv').config();
@@ -40,17 +40,31 @@ const Fieldlocation = require('./routes/fieldRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const bulkLocationRoutes = require('./routes/bulkLocationRoutes');
 const billingRoutes = require("./routes/billingRoutes");
+
 /* ================= APP INIT ================= */
 const app = express();
-app.set("trust proxy", 1); // ✅ FIX (VERY IMPORTANT)
+app.set("trust proxy", 1);
 
+const server = http.createServer(app);
+
+/* =========================================================
+   🔥🔥🔥 CRITICAL FIX: WEBHOOK MUST COME FIRST (RAW BODY)
+========================================================= */
+const paymentController = require("./controllers/paymentController");
+
+app.post(
+  "/api/payment/webhook",
+  express.raw({ type: "application/json" }),
+  paymentController.handleWebhook
+);
+
+/* ================= BASIC MIDDLEWARE ================= */
 app.use((req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   next();
 });
 
-const server = http.createServer(app);
-/* ================= CORS (SECURE) ================= */
+/* ================= CORS ================= */
 app.use(cors({
   origin: [
     "http://localhost:3000",
@@ -75,7 +89,7 @@ const io = new Server(server, {
   pingTimeout: 60000,
 });
 
-/* 🔥 SOCKET AUTH */
+/* 🔐 SOCKET AUTH */
 io.use((socket, next) => {
   try {
     const token = socket.handshake.auth?.token;
@@ -88,34 +102,31 @@ io.use((socket, next) => {
   }
 });
 
-/* ================= SECURITY & RATE LIMITING ================= */
+/* ================= SECURITY ================= */
 app.use(helmet());
 
-// 🔥 HIGH LIMIT FOR LOCATION ROUTES (30 per minute) – MUST come before global limiter
+/* ================= RATE LIMIT ================= */
 const locationLimiter = rateLimit({
-  windowMs: 60 * 1000,      // 1 minute
-  max: 30,                  // 30 requests per minute (allows 2 per 30 sec)
-  standardHeaders: true,
-  legacyHeaders: false,
+  windowMs: 60 * 1000,
+  max: 30,
 });
 
-// Apply to exact location endpoints (these will NOT be caught by the global limiter)
 app.post('/api/locations/update', locationLimiter);
 app.get('/api/locations/live', locationLimiter);
 
-// 🔥 GLOBAL LIMITER (for all other /api/ routes)
 app.use('/api/', rateLimit({
   windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 900000),
   max: Number(process.env.RATE_LIMIT_MAX || 100),
 }));
 
-// Auth limiter (stricter)
 app.use('/api/auth/', rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
 }));
 
-/* ================= BODY PARSING ================= */
+/* =========================================================
+   ✅ NORMAL BODY PARSER (AFTER WEBHOOK)
+========================================================= */
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -124,7 +135,7 @@ app.use(morgan('combined', {
   stream: { write: msg => logger.info(msg.trim()) }
 }));
 
-/* ================= ATTACH SOCKET TO REQUEST ================= */
+/* ================= SOCKET ATTACH ================= */
 app.use((req, res, next) => {
   req.io = io;
   next();
@@ -136,7 +147,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/v2/users', userRoutesV2);
 
 app.use('/api/attendance', attendanceRoutes);
-app.use('/api/locations', locationRoutes);   // other location sub‑routes use global limiter
+app.use('/api/locations', locationRoutes);
 app.use('/api/geofences', geofenceRoutes);
 
 app.use('/api/dashboard', dashboardRoutes);
@@ -152,23 +163,18 @@ app.use('/api/super-admin', superAdminRoutes);
 app.use("/api/bulk-location", bulkLocationRoutes);
 app.use("/api/field-locations", Fieldlocation);
 app.use("/api/payment", paymentRoutes);
-/* ================= HEALTH CHECK ================= */
+
+/* ================= HEALTH ================= */
 app.get('/api/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'GeoTrack API is running 🚀'
-  });
+  res.json({ success: true, message: 'API running 🚀' });
 });
 
-/* ================= 404 HANDLER ================= */
+/* ================= 404 ================= */
 app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: 'Route not found'
-  });
+  res.status(404).json({ success: false, message: 'Route not found' });
 });
 
-/* ================= GLOBAL ERROR HANDLER ================= */
+/* ================= ERROR HANDLER ================= */
 app.use((err, req, res, next) => {
   console.error(err);
   logger.error(err.message);
@@ -181,15 +187,17 @@ app.use((err, req, res, next) => {
 /* ================= SOCKET INIT ================= */
 initializeSocket(io);
 
-/* ================= START SERVER ================= */
+/* ================= START ================= */
 const startServer = async () => {
   try {
     await connectDB();
     const PORT = process.env.PORT || 5000;
     const HOST = process.env.HOST || '0.0.0.0';
+
     server.listen(PORT, HOST, () => {
       logger.info(`🚀 Server running at http://${HOST}:${PORT}`);
     });
+
   } catch (error) {
     logger.error(`❌ Server start failed: ${error.message}`);
     process.exit(1);

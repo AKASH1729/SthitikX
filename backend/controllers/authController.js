@@ -46,21 +46,14 @@ const registerCompany = async (req, res) => {
     const { companyName, adminName, email, password, plan = "trial" } = req.body;
 
     if (!companyName || !adminName || !email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: "All fields required",
-      });
+      return res.status(400).json({ success: false, message: "All fields required" });
     }
 
     const existing = await User.findOne({ email });
     if (existing) {
-      return res.status(400).json({
-        success: false,
-        message: "Email already exists",
-      });
+      return res.status(400).json({ success: false, message: "Email already exists" });
     }
 
-    /* 🔥 SAVE TEMP USER */
     pendingUsers.set(email, {
       companyName,
       adminName,
@@ -69,10 +62,7 @@ const registerCompany = async (req, res) => {
       plan,
     });
 
-    /* 🔐 CREATE VERIFY TOKEN */
-    const token = jwt.sign({ email }, process.env.JWT_SECRET, {
-      expiresIn: "10m",
-    });
+    const token = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: "10m" });
 
     const verifyUrl = `${process.env.CLIENT_URL}/verify-email/${token}`;
 
@@ -80,17 +70,13 @@ const registerCompany = async (req, res) => {
       email,
       "Verify your email - SthitiX",
       `<h2>Verify your account</h2>
-       <p>Click below to verify:</p>
        <a href="${verifyUrl}">Verify Email</a>`
     );
 
-    res.json({
-      success: true,
-      message: "Verification email sent",
-    });
+    res.json({ success: true, message: "Verification email sent" });
 
   } catch (err) {
-    console.error("❌ REGISTER ERROR:", err.message);
+    console.error("REGISTER ERROR:", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -103,26 +89,19 @@ const verifyEmail = async (req, res) => {
     const { token } = req.params;
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
     const data = pendingUsers.get(decoded.email);
 
     if (!data) {
-      return res.status(400).json({
-        message: "Expired or invalid link",
-      });
+      return res.status(400).json({ message: "Expired or invalid link" });
     }
 
     const existingCompany = await Company.findOne({ email: data.email });
     if (existingCompany) {
-      return res.status(400).json({
-        message: "Company already verified",
-      });
+      return res.status(400).json({ message: "Already verified" });
     }
 
-    /* ── TRIAL PLAN ── */
+    /* 🆓 TRIAL */
     if (data.plan === "trial") {
-      const now = new Date();
-
       const company = await Company.create({
         name: data.companyName,
         email: data.email,
@@ -130,7 +109,7 @@ const verifyEmail = async (req, res) => {
         planPrice: 0,
         baseEmployees: 50,
         extraEmployeePrice: 30,
-        trialExpiresAt: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+        trialExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       });
 
       const bcrypt = require("bcryptjs");
@@ -148,14 +127,12 @@ const verifyEmail = async (req, res) => {
 
       return res.json({
         success: true,
-        message: "Free trial started 🎉",
+        message: "Free trial started",
         redirect: "/login",
       });
     }
 
-    /* ── PAID PLAN ── */
-    // ✅ FIX: this was outside the try block in original — now correctly inside
-    pendingUsers.delete(data.email);
+    /* 💳 PAID PLAN (FIXED) */
     return res.json({
       success: true,
       message: "Email verified",
@@ -163,10 +140,8 @@ const verifyEmail = async (req, res) => {
     });
 
   } catch (err) {
-    console.error("❌ VERIFY EMAIL ERROR:", err.message);
-    res.status(400).json({
-      message: "Invalid or expired token",
-    });
+    console.error("VERIFY ERROR:", err.message);
+    res.status(400).json({ message: "Invalid or expired token" });
   }
 };
 

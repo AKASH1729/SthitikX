@@ -1,9 +1,5 @@
-/**
- * Signup Page — FINAL FIXED VERSION 🚀
- */
-
 import React, { useState } from "react";
-import api from "../services/api"; // ✅ ONLY use api instance
+import api from "../services/api";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 /* ================= LOAD RAZORPAY ================= */
@@ -60,33 +56,37 @@ export default function SignupPage() {
     try {
       setLoading(true);
 
-      /* 🆓 TRIAL FLOW */
-      if (plan === "trial") {
-        await api.post("/auth/register-company", {
-          ...form,
-          plan,
-        });
+      /* 🔥 STEP 1: REGISTER USER (pendingUsers) */
+      await api.post("/auth/register-company", {
+        ...form,
+        plan,
+      });
 
+      /* 🆓 TRIAL PLAN */
+      if (plan === "trial") {
         alert("🎉 Company created successfully!");
         return navigate("/login");
       }
 
-      /* 🔥 LOAD RAZORPAY */
+      /* 🔥 STEP 2: LOAD RAZORPAY */
       const loaded = await loadRazorpay();
       if (!loaded) {
         return setError("Razorpay SDK failed to load");
       }
 
-      /* ✅ CREATE ORDER (FIXED) */
-      const { data } = await api.post("/payment/order", { plan });
+      /* 🔥 STEP 3: CREATE ORDER */
+      const { data } = await api.post("/payment/order", {
+        plan,
+        email: form.email,
+      });
 
       if (!data?.order?.id) {
         throw new Error("Order creation failed");
       }
 
-      /* 🔥 RAZORPAY OPTIONS */
+      /* 🔥 STEP 4: PAYMENT */
       const options = {
-        key: process.env.REACT_APP_RAZORPAY_KEY,
+	key: "rzp_test_ShNM3DYjjdrKnx",
         amount: data.order.amount,
         currency: "INR",
         name: "SthitiX",
@@ -95,15 +95,17 @@ export default function SignupPage() {
 
         handler: async function (response) {
           try {
-            /* ✅ VERIFY PAYMENT (FIXED) */
             await api.post("/payment/verify", {
               ...response,
-              ...form,
+              email: form.email,
               plan,
             });
 
-            alert("🎉 Payment successful & company created!");
-            navigate("/login");
+            alert("🎉 Payment successful! Account created");
+
+            setTimeout(() => {
+              navigate("/login");
+            }, 1200);
 
           } catch (err) {
             console.error(err);
@@ -111,8 +113,9 @@ export default function SignupPage() {
           }
         },
 
-        modal: {
-          ondismiss: () => console.log("Payment cancelled"),
+        prefill: {
+          name: form.adminName,
+          email: form.email,
         },
 
         theme: {
@@ -122,7 +125,8 @@ export default function SignupPage() {
 
       const rzp = new window.Razorpay(options);
 
-      rzp.on("payment.failed", () => {
+      rzp.on("payment.failed", (err) => {
+        console.error(err);
         alert("❌ Payment failed");
       });
 
@@ -138,16 +142,13 @@ export default function SignupPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-white px-4">
-
       <form
         onSubmit={handleSubmit}
         className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md space-y-5"
       >
         <div className="text-center">
           <h1 className="text-2xl font-bold">Create Company</h1>
-          <p className="text-gray-500 text-sm">
-            Start your SaaS journey 🚀
-          </p>
+          <p className="text-gray-500 text-sm">Start your SaaS journey 🚀</p>
         </div>
 
         <div className="bg-blue-50 p-3 rounded text-center">
@@ -215,7 +216,6 @@ export default function SignupPage() {
             Login
           </span>
         </p>
-
       </form>
     </div>
   );
