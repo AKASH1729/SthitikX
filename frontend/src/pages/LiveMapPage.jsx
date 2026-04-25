@@ -49,7 +49,7 @@ const weakIcon = new L.Icon({
 const isRecentlyActive = (emp) => {
   if (!emp?.lastLocation?.timestamp) return false;
   const diff = Date.now() - new Date(emp.lastLocation.timestamp).getTime();
-  return diff < 3 * 60 * 1000; // 3 minutes
+  return diff < 6 * 60 * 1000; // 6 minutes
 };
 
 // Component to handle auto‑fly to selected employee

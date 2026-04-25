@@ -24,6 +24,9 @@ const plans = [
 export default function PricingPage() {
   const [loading, setLoading] = useState(null);
 
+  // 🔥 TEMP: get email from localStorage (or pass via signup)
+  const email = localStorage.getItem("signupEmail");
+
   const handlePayment = async (plan) => {
     try {
       setLoading(plan);
@@ -33,10 +36,16 @@ export default function PricingPage() {
         return;
       }
 
+      if (!email) {
+        alert("Email missing. Please signup again.");
+        return;
+      }
+
       const loaded = await loadRazorpay();
       if (!loaded) return alert("Razorpay failed");
 
-      const { data } = await api.post("/payment/order", { plan });
+      // ✅ SEND EMAIL HERE ALSO
+      const { data } = await api.post("/payment/order", { plan, email });
 
       const rzp = new window.Razorpay({
         key: process.env.REACT_APP_RAZORPAY_KEY,
@@ -46,9 +55,23 @@ export default function PricingPage() {
         name: "SthitiX",
 
         handler: async (res) => {
-          await api.post("/payment/verify", { ...res, plan });
-          alert("Payment success 🎉");
-          window.location.href = "/login";
+          try {
+            // ✅ SEND EMAIL + PLAN
+            await api.post("/payment/verify", {
+              razorpay_order_id: res.razorpay_order_id,
+              razorpay_payment_id: res.razorpay_payment_id,
+              razorpay_signature: res.razorpay_signature,
+              email,
+              plan,
+            });
+
+            alert("✅ Payment success 🎉");
+            window.location.href = "/login";
+
+          } catch (err) {
+            console.error("VERIFY FAIL:", err);
+            alert("Verification failed");
+          }
         },
       });
 

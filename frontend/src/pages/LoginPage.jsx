@@ -255,7 +255,7 @@ export default function LoginPage() {
                 onClick={() => navigate("/forgot-password")}
                 className="text-sm text-blue-600 hover:text-blue-800 hover:underline focus:outline-none"
               >
-                Forgot password?
+               
               </button>
             </motion.div>
 
@@ -292,7 +292,7 @@ export default function LoginPage() {
           >
             Don't have an account?{' '}
             <button
-              onClick={() => navigate("/signup")}
+              onClick={() => navigate("/", { state: { openPricing: true } })}
               className="font-medium text-blue-600 hover:text-blue-800 hover:underline focus:outline-none"
             >
               Sign up

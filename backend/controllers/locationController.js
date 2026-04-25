@@ -2,7 +2,7 @@ const Location = require("../models/bulkLocation");
 const User = require("../models/User");
 
 /* =========================================
-🔥 BULK SYNC (OPTIMIZED + FIXED)
+🔥 BULK SYNC (FINAL FIX)
 ========================================= */
 const syncLocations = async (req, res) => {
   try {
@@ -15,14 +15,20 @@ const syncLocations = async (req, res) => {
       });
     }
 
-    const companyId = String(req.user.companyId);
-    const now = new Date();
+    // ✅ FIX: consistent companyId
+    const companyId = req.user.companyId;
 
     const docs = batch
       .filter(item => item.lat && item.lng && item.employeeId)
       .map(item => {
         const lat = Number(item.lat);
         const lng = Number(item.lng);
+
+        // ✅ FIX: safe timestamp
+        const deviceTime =
+          item.timestamp && !isNaN(new Date(item.timestamp))
+            ? new Date(item.timestamp)
+            : new Date();
 
         return {
           syncId: item.syncId,
@@ -44,11 +50,11 @@ const syncLocations = async (req, res) => {
           battery: item.battery ?? -1,
           networkQuality: item.networkQuality || "good",
 
-          timestamp: now, // 🔥 SAME TIME FOR ALL
+          timestamp: deviceTime,
         };
       });
 
-    /* 🔥 SAVE ROUTES */
+    /* 🔥 SAVE LOCATIONS */
     await Location.bulkWrite(
       docs.map(doc => ({
         updateOne: {
@@ -59,8 +65,13 @@ const syncLocations = async (req, res) => {
       }))
     );
 
-    /* 🔥 FIX: UPDATE USERS IN BULK (FAST + ACCURATE) */
-    const userUpdates = docs.map(doc => ({
+    /* 🔥 FIX: Deduplicate latest per employee */
+    const latestPerEmployee = {};
+    docs.forEach(doc => {
+      latestPerEmployee[doc.employeeId] = doc;
+    });
+
+    const userUpdates = Object.values(latestPerEmployee).map(doc => ({
       updateOne: {
         filter: {
           employeeId: doc.employeeId,
@@ -71,7 +82,7 @@ const syncLocations = async (req, res) => {
             lastLocation: {
               lat: doc.lat,
               lng: doc.lng,
-              timestamp: now, // 🔥 CRITICAL FIX
+              timestamp: doc.timestamp,
             },
             battery: doc.battery,
             networkQuality: doc.networkQuality,
@@ -97,7 +108,7 @@ const syncLocations = async (req, res) => {
 
 
 /* =========================================
-📡 LIVE LOCATIONS (FIXED)
+📡 LIVE LOCATIONS (FINAL FIX)
 ========================================= */
 const getLiveLocations = async (req, res) => {
   try {
@@ -110,18 +121,19 @@ const getLiveLocations = async (req, res) => {
 
     const companyId = req.user.companyId;
 
+    // ✅ FIX: lean() for performance
     const users = await User.find({
       companyId,
       role: "employee",
       isActive: true,
-    }).select(
-      "name employeeId lastLocation battery networkQuality isTracking"
-    );
+    })
+      .select("name employeeId lastLocation battery networkQuality isTracking")
+      .lean();
 
     const now = Date.now();
 
-    /* 🔥 MATCH FRONTEND (3 MINUTES) */
-    const ONLINE_THRESHOLD = 3 * 60 * 1000;
+    // ✅ FIX: stable threshold
+    const ONLINE_THRESHOLD = 6 * 60 * 1000;
 
     const employees = users.map((emp) => {
       let isOnline = false;
@@ -143,7 +155,7 @@ const getLiveLocations = async (req, res) => {
         networkQuality: emp.networkQuality || "good",
 
         isOnline,
-        isTracking: emp.isTracking && isOnline, // 🔥 FINAL FIX
+        isTracking: emp.isTracking && isOnline,
       };
     });
 
@@ -160,19 +172,22 @@ const getLiveLocations = async (req, res) => {
 
 
 /* =========================================
-🛣 ROUTE HISTORY (OK)
+🛣 ROUTE HISTORY (FINAL FIX)
 ========================================= */
 const getRouteHistory = async (req, res) => {
   try {
     const { employeeId } = req.params;
     const { date } = req.query;
 
-    const start = new Date(`${date}T00:00:00+05:30`);
-    const end = new Date(`${date}T23:59:59.999+05:30`);
+    const start = new Date(date);
+    start.setHours(0, 0, 0, 0);
+
+    const end = new Date(date);
+    end.setHours(23, 59, 59, 999);
 
     const logs = await Location.find({
       employeeId,
-      companyId: String(req.user.companyId),
+      companyId: req.user.companyId, // ✅ FIX
       timestamp: {
         $gte: start,
         $lte: end,
@@ -189,7 +204,7 @@ const getRouteHistory = async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ getRouteHistory:", err);
     res.status(500).json({ success: false });
   }
 };

@@ -1,37 +1,75 @@
 const mongoose = require("mongoose");
 
-const locationSchema = new mongoose.Schema({
-  syncId: { type: String, unique: true, sparse: true },
-
-  employeeId: { type: String, index: true },
-  companyId: { type: String, index: true },
-  deviceId: String,
-
-  location: {
-    type: {
+const locationSchema = new mongoose.Schema(
+  {
+    syncId: {
       type: String,
-      enum: ["Point"],
-      default: "Point",
+      unique: true,
+      sparse: true,
     },
-    coordinates: {
-      type: [Number], // [lng, lat]
+
+    employeeId: {
+      type: String,
+      required: true,
+    },
+
+    companyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company",
+      required: true,
+    },
+
+    deviceId: String,
+
+    // 🌍 GeoJSON (for map queries)
+    location: {
+      type: {
+        type: String,
+        enum: ["Point"],
+        default: "Point",
+      },
+      coordinates: {
+        type: [Number], // [lng, lat]
+        required: true,
+      },
+    },
+
+    // 🔥 Keep for fast UI usage (optional but good)
+    lat: { type: Number, required: true },
+    lng: { type: Number, required: true },
+
+    speed: Number,
+    accuracy: Number,
+    battery: Number,
+    networkQuality: String,
+
+    timestamp: {
+      type: Date,
       required: true,
     },
   },
+  { timestamps: true }
+);
 
-  // 🔥 VERY IMPORTANT
-  lat: { type: Number, required: true },
-  lng: { type: Number, required: true },
+/* ===================== INDEXES ===================== */
 
-  speed: Number,
-  accuracy: Number,
-  battery: Number,
-  networkQuality: String,
+// 🔥 MOST IMPORTANT (primary query)
+locationSchema.index({ companyId: 1, employeeId: 1, timestamp: -1 });
 
-  timestamp: { type: Date, index: true },
-}, { timestamps: true });
+// 🔥 dashboard / recent data
+locationSchema.index({ companyId: 1, timestamp: -1 });
 
-locationSchema.index({ location: "2dsphere" });
+// 🔥 single employee tracking
 locationSchema.index({ employeeId: 1, timestamp: -1 });
+
+// 🌍 geo queries (maps / radius)
+locationSchema.index({ location: "2dsphere" });
+
+// 🧹 OPTIONAL: auto delete old data (30 days)
+// comment/remove if you want permanent history
+locationSchema.index(
+  { timestamp: 1 },
+  { expireAfterSeconds: 60 * 60 * 24 * 30 }
+);
 
 module.exports = mongoose.model("bulkLocation", locationSchema);

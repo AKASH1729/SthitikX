@@ -41,104 +41,108 @@ export default function SignupPage() {
   const [error, setError] = useState("");
 
   /* ================= SUBMIT ================= */
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError("");
+const handleSubmit = async (e) => {
+  e.preventDefault();
+  setError("");
 
-    if (!form.companyName || !form.adminName || !form.email || !form.password) {
-      return setError("All fields are required");
+  if (!form.companyName || !form.adminName || !form.email || !form.password) {
+    return setError("All fields are required");
+  }
+
+  if (form.password.length < 6) {
+    return setError("Password must be at least 6 characters");
+  }
+
+  if (loading) return; // ✅ prevent multiple clicks
+
+  try {
+    setLoading(true);
+
+    /* 🔥 STEP 1: REGISTER USER (pendingUsers) */
+    await api.post("/auth/register-company", {
+      ...form,
+      plan,
+    });
+
+    /* 🆓 TRIAL PLAN */
+    if (plan === "trial") {
+      alert("🎉 Company created successfully!");
+      return navigate("/login");
     }
 
-    if (form.password.length < 6) {
-      return setError("Password must be at least 6 characters");
+    /* 🔥 STEP 2: LOAD RAZORPAY */
+    const loaded = await loadRazorpay();
+    if (!loaded) {
+      return setError("Razorpay SDK failed to load");
     }
 
-    try {
-      setLoading(true);
+    /* 🔥 STEP 3: CREATE ORDER */
+    const { data } = await api.post("/payment/order", {
+      plan,
+      email: form.email,
+    });
 
-      /* 🔥 STEP 1: REGISTER USER (pendingUsers) */
-      await api.post("/auth/register-company", {
-        ...form,
-        plan,
-      });
+    if (!data?.order?.id) {
+      throw new Error("Order creation failed");
+    }
 
-      /* 🆓 TRIAL PLAN */
-      if (plan === "trial") {
-        alert("🎉 Company created successfully!");
-        return navigate("/login");
-      }
+    /* 🔥 STEP 4: PAYMENT */
+    const options = {
+      key: "rzp_test_ShNM3DYjjdrKnx", // ⚠️ change later to env
+      amount: data.order.amount,
+      currency: "INR",
+      name: "SthitiX",
+      description: `${currentPlan.name} Plan`,
+      order_id: data.order.id,
 
-      /* 🔥 STEP 2: LOAD RAZORPAY */
-      const loaded = await loadRazorpay();
-      if (!loaded) {
-        return setError("Razorpay SDK failed to load");
-      }
+      handler: async function (response) {
+        try {
+          await api.post("/payment/verify", {
+            razorpay_order_id: response.razorpay_order_id,
+            razorpay_payment_id: response.razorpay_payment_id,
+            razorpay_signature: response.razorpay_signature,
+            email: form.email,
+            plan,
+          });
 
-      /* 🔥 STEP 3: CREATE ORDER */
-      const { data } = await api.post("/payment/order", {
-        plan,
+          alert("🎉 Payment successful! Account created");
+
+          setTimeout(() => {
+            navigate("/login");
+          }, 1200);
+
+        } catch (err) {
+          console.error("VERIFY ERROR:", err);
+          alert("Payment successful but verification failed. Contact support.");
+        }
+      },
+
+      prefill: {
+        name: form.adminName,
         email: form.email,
-      });
+      },
 
-      if (!data?.order?.id) {
-        throw new Error("Order creation failed");
-      }
+      theme: {
+        color: "#2563eb",
+      },
+    };
 
-      /* 🔥 STEP 4: PAYMENT */
-      const options = {
-	key: "rzp_test_ShNM3DYjjdrKnx",
-        amount: data.order.amount,
-        currency: "INR",
-        name: "SthitiX",
-        description: `${currentPlan.name} Plan`,
-        order_id: data.order.id,
+    const rzp = new window.Razorpay(options);
 
-        handler: async function (response) {
-          try {
-            await api.post("/payment/verify", {
-              ...response,
-              email: form.email,
-              plan,
-            });
+    rzp.on("payment.failed", (err) => {
+      console.error("PAYMENT FAILED:", err);
+      alert("❌ Payment failed");
+    });
 
-            alert("🎉 Payment successful! Account created");
+    rzp.open();
 
-            setTimeout(() => {
-              navigate("/login");
-            }, 1200);
-
-          } catch (err) {
-            console.error(err);
-            alert("Payment verification failed");
-          }
-        },
-
-        prefill: {
-          name: form.adminName,
-          email: form.email,
-        },
-
-        theme: {
-          color: "#2563eb",
-        },
-      };
-
-      const rzp = new window.Razorpay(options);
-
-      rzp.on("payment.failed", (err) => {
-        console.error(err);
-        alert("❌ Payment failed");
-      });
-
-      rzp.open();
-
-    } catch (err) {
-      console.error(err);
-      setError(err.response?.data?.message || "Signup failed");
-    } finally {
-      setLoading(false);
-    }
-  };
+  } catch (err) {
+    console.error(err);
+    setError(err.response?.data?.message || "Signup failed");
+  } finally {
+    setLoading(false);
+  }
+};
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-white px-4">
