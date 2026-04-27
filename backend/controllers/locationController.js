@@ -1,102 +1,144 @@
 const Location = require("../models/bulkLocation");
 const User = require("../models/User");
 
-/* =========================================
-🔥 BULK SYNC
-========================================= */
+/* =========================================================
+   POST /api/bulk-location
+========================================================= */
 const syncLocations = async (req, res) => {
   try {
     const { batch } = req.body;
 
     if (!Array.isArray(batch) || batch.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid batch",
-      });
+      return res.status(400).json({ success: false, message: "Invalid batch" });
     }
 
     const companyId = req.user.companyId;
 
+    // 🔥 FIX 1: allow heartbeat (lat/lng optional)
     const docs = batch
-      .filter(item => item.lat && item.lng && item.employeeId)
-      .map(item => {
-        const lat = Number(item.lat);
-        const lng = Number(item.lng);
-
-        const deviceTime =
-          item.timestamp && !isNaN(new Date(item.timestamp))
-            ? new Date(item.timestamp)
+      .filter(i => i.employeeId)   // ❌ before: lat && lng
+      .map(i => {
+        const timestamp =
+          i.timestamp && !isNaN(new Date(i.timestamp))
+            ? new Date(i.timestamp)
             : new Date();
 
+        // 🔋 normalize battery
+        let battery = 0;
+        if (typeof i.battery === "number") {
+          battery =
+            i.battery <= 1
+              ? Math.round(i.battery * 100)
+              : Math.round(i.battery);
+        }
+
         return {
-          syncId: item.syncId,
-          employeeId: item.employeeId,
+          syncId: i.syncId || `${i.employeeId}-${timestamp.getTime()}`,
+          employeeId: i.employeeId,
           companyId,
-          deviceId: item.deviceId,
+          deviceId: i.deviceId,
 
-          location: {
-            type: "Point",
-            coordinates: [lng, lat],
-          },
+          // allow missing GPS
+          location: i.lat && i.lng
+            ? {
+                type: "Point",
+                coordinates: [Number(i.lng), Number(i.lat)],
+              }
+            : undefined,
 
-          lat,
-          lng,
+          lat: i.lat ?? null,
+          lng: i.lng ?? null,
 
-          speed: item.speed || 0,
-          accuracy: item.accuracy || null,
-          battery: item.battery ?? -1,
-          networkQuality: item.networkQuality || "good",
-
-          timestamp: deviceTime,
+          speed: typeof i.speed === "number" ? i.speed : 0,
+          accuracy: i.accuracy ?? null,
+          battery,
+          networkQuality: i.networkQuality || "good",
+          timestamp,
         };
       });
 
-    /* 🔥 SAVE LOCATIONS */
+    if (!docs.length) {
+      return res.status(400).json({ success: false });
+    }
+
+    // ✅ Insert (dedupe)
     await Location.bulkWrite(
       docs.map(doc => ({
         updateOne: {
           filter: { syncId: doc.syncId },
           update: { $setOnInsert: doc },
           upsert: true,
-        }
-      }))
+        },
+      })),
+      { ordered: false }
     );
 
-    /* 🔥 Update latest user state */
-    const latestPerEmployee = {};
+    // 🔥 get latest per employee
+    const latestMap = {};
     docs.forEach(doc => {
-      latestPerEmployee[doc.employeeId] = doc;
-    });
-
-    const userUpdates = Object.values(latestPerEmployee).map(doc => ({
-      updateOne: {
-        filter: {
-          employeeId: doc.employeeId,
-          companyId,
-        },
-        update: {
-          $set: {
-            lastLocation: {
-              lat: doc.lat,
-              lng: doc.lng,
-              timestamp: doc.timestamp,
-            },
-            battery: doc.battery,
-            networkQuality: doc.networkQuality,
-            isTracking: true,
-          }
-        }
+      if (
+        !latestMap[doc.employeeId] ||
+        new Date(doc.timestamp) > new Date(latestMap[doc.employeeId].timestamp)
+      ) {
+        latestMap[doc.employeeId] = doc;
       }
-    }));
-
-    await User.bulkWrite(userUpdates);
-
-    console.log("✅ Locations synced:", docs.length);
-
-    res.json({
-      success: true,
-      inserted: docs.length,
     });
+
+    const latestDocs = Object.values(latestMap);
+
+    // 🔥 FIX 2: update user safely (NO stale overwrite)
+    await User.bulkWrite(
+      latestDocs.map(doc => ({
+        updateOne: {
+          filter: {
+            employeeId: doc.employeeId,
+            $or: [
+              { "lastLocation.timestamp": { $lt: doc.timestamp } },
+              { "lastLocation.timestamp": { $exists: false } },
+            ],
+          },
+          update: {
+            $set: {
+              ...(doc.lat && doc.lng
+                ? {
+                    lastLocation: {
+                      lat: doc.lat,
+                      lng: doc.lng,
+                      timestamp: doc.timestamp,
+                    },
+                  }
+                : {}), // 🔥 do not overwrite location if heartbeat
+
+              battery: typeof doc.battery === "number" ? doc.battery : 0,
+              speed: doc.speed ?? 0,
+              networkQuality: doc.networkQuality || "good",
+              isTracking: true,
+              lastSeen: doc.timestamp, // 🔥 NEW (for heartbeat tracking)
+            },
+          },
+        },
+      })),
+      { ordered: false }
+    );
+
+    // 🔥 FIX 3: socket emit (always)
+    if (req.io) {
+      latestDocs.forEach(doc => {
+        req.io.to(companyId.toString()).emit("location:update", {
+          employeeId: doc.employeeId,
+          lat: doc.lat,
+          lng: doc.lng,
+          battery: typeof doc.battery === "number" ? doc.battery : 0,
+          speed: doc.speed ?? 0,
+          networkQuality: doc.networkQuality || "good",
+          timestamp: doc.timestamp,
+          isOnline: true,
+        });
+      });
+    }
+
+    console.log(`✅ Synced ${docs.length} locations`);
+    res.json({ success: true });
 
   } catch (err) {
     console.error("❌ syncLocations:", err);
@@ -105,62 +147,47 @@ const syncLocations = async (req, res) => {
 };
 
 
-/* =========================================
-📡 LIVE LOCATIONS (FINAL FIXED)
-========================================= */
+/* =========================================================
+   GET /api/locations/live
+========================================================= */
 const getLiveLocations = async (req, res) => {
   try {
-    if (!req.user || !req.user.companyId) {
-      return res.status(401).json({
-        success: false,
-        message: "No company context",
-      });
-    }
-
     const companyId = req.user.companyId;
+    const now = Date.now();
+
+    // 🔥 FIX 4: increase threshold for background
+    const ONLINE_THRESHOLD = 10 * 60 * 1000; // 10 min
 
     const users = await User.find({
       companyId,
       role: "employee",
       isActive: true,
     })
-      .select("name employeeId lastLocation battery networkQuality isTracking")
+      .select("name employeeId lastLocation battery speed networkQuality isTracking lastSeen")
       .lean();
 
-    const now = Date.now();
+    const employees = users.map(emp => {
+      const ts =
+        emp.lastLocation?.timestamp ||
+        emp.lastSeen; // 🔥 fallback to heartbeat
 
-    // 🔥 FINAL CORRECT LOGIC
-    const ONLINE_THRESHOLD = 12 * 60 * 1000;
-
-    const employees = users.map((emp) => {
-      let isOnline = false;
-
-      if (emp.lastLocation?.timestamp) {
-        const diff = now - new Date(emp.lastLocation.timestamp).getTime();
-
-        if (diff < ONLINE_THRESHOLD) {
-          isOnline = true;
-        }
-      }
+      const diff = ts ? now - new Date(ts).getTime() : Infinity;
+      const isOnline = diff < ONLINE_THRESHOLD;
 
       return {
         _id: emp._id,
         name: emp.name,
         employeeId: emp.employeeId,
-
-        lastLocation: emp.lastLocation,
-        battery: emp.battery,
+        lastLocation: emp.lastLocation || null,
+        battery: typeof emp.battery === "number" ? emp.battery : 0,
+        speed: typeof emp.speed === "number" ? emp.speed : 0,
         networkQuality: emp.networkQuality || "good",
-
         isOnline,
-        isTracking: emp.isTracking && isOnline,
+        isTracking: !!(emp.isTracking && isOnline),
       };
     });
 
-    res.json({
-      success: true,
-      employees,
-    });
+    res.json({ success: true, employees });
 
   } catch (err) {
     console.error("❌ getLiveLocations:", err);
@@ -169,34 +196,41 @@ const getLiveLocations = async (req, res) => {
 };
 
 
-/* =========================================
-🛣 ROUTE HISTORY
-========================================= */
+/* =========================================================
+   GET /api/locations/history/:employeeId
+========================================================= */
 const getRouteHistory = async (req, res) => {
   try {
     const { employeeId } = req.params;
     const { date } = req.query;
 
-    const start = new Date(date);
-    start.setHours(0, 0, 0, 0);
+    if (!employeeId || !date) {
+      return res.status(400).json({
+        success: false,
+        message: "employeeId and date required",
+      });
+    }
 
-    const end = new Date(date);
-    end.setHours(23, 59, 59, 999);
+    const start = new Date(date + "T00:00:00+05:30");
+    const end   = new Date(date + "T23:59:59+05:30");
 
     const logs = await Location.find({
       employeeId,
       companyId: req.user.companyId,
-      timestamp: {
-        $gte: start,
-        $lte: end,
-      },
-    }).sort({ timestamp: 1 });
+      timestamp: { $gte: start, $lte: end },
+    })
+      .sort({ timestamp: 1 })
+      .limit(3000)
+      .lean();
 
     res.json({
       success: true,
+      count: logs.length,
       data: logs.map(l => ({
         lat: l.lat,
         lng: l.lng,
+        speed: l.speed ?? 0,
+        battery: typeof l.battery === "number" ? l.battery : 0,
         timestamp: l.timestamp,
       })),
     });
