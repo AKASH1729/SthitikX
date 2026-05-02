@@ -52,7 +52,7 @@ function Navbar({ openPricing }) {
           <motion.a
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            href="https://sthitix.s3.ap-south-1.amazonaws.com/application-9dda3d8f-3b18-4255-907c-e191e1591605.apk"
+            href="https://sthitix.s3.ap-south-1.amazonaws.com/sthitix.apk"
             download
             className="bg-gradient-to-r from-green-500 to-green-600 text-white px-5 py-2 rounded-lg shadow hover:shadow-md transition-all flex items-center gap-2"
           >
@@ -105,7 +105,7 @@ function Navbar({ openPricing }) {
               {/* ✅ NEW: Download App button (mobile) */}
               <motion.a
                 whileTap={{ scale: 0.95 }}
-                href="https://sthitix.s3.ap-south-1.amazonaws.com/application-9dda3d8f-3b18-4255-907c-e191e1591605.apk"
+                href="https://sthitix.s3.ap-south-1.amazonaws.com/sthitix.apk"
                 download
                 className="bg-gradient-to-r from-green-500 to-green-600 text-white px-5 py-2 rounded-lg shadow flex items-center justify-center gap-2"
               >
@@ -154,7 +154,7 @@ function Hero({ openPricing }) {
           onClick={openPricing}
           className="bg-blue-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl transition-all"
         >
-          Start Free Trial 🚀
+          Start Free Trial 
         </motion.button>
         <motion.button
           whileHover={{ scale: 1.05 }}

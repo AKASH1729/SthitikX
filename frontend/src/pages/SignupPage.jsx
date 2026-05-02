@@ -88,7 +88,7 @@ const handleSubmit = async (e) => {
 
     /* 🔥 STEP 4: PAYMENT */
     const options = {
-      key: "rzp_test_ShNM3DYjjdrKnx", // ⚠️ change later to env
+      key: process.env.REACT_APP_API_KEY, 
       amount: data.order.amount,
       currency: "INR",
       name: "SthitiX",

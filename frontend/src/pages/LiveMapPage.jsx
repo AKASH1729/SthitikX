@@ -1,25 +1,29 @@
 /**
- * LiveMapPage.jsx — FULLY FIXED + MODERN UI
+ * LiveMapPage.jsx — Enterprise live tracking dashboard.
  *
- * All 10 original fixes + battery preservation fixes:
+ * MAP: OpenStreetMap "Hot" style — full color, easy to read roads/buildings.
+ *      Toggle to satellite (Esri) for ground-level context.
  *
- * BATTERY FIXES:
- *  B1. Polling merge — never overwrite good battery with null/0
- *  B2. Socket update — never overwrite good battery with 0
- *  B3. Selected sync — same guard
- *  B4. fmtBattery — b <= 0 shows "--"
- *
- * ORIGINAL FIXES:
- *  1.  Socket isOnline — only true if lat+lng valid
- *  2.  Selected sync isOnline — same guard
- *  3.  Battery 0% display — shows "--"
- *  4.  Speed typeof guard
- *  5.  Polling merge — requires lat+lng for online=true
- *  6.  Marker icon — requires lastLocation.lat
- *  7.  Popup network — offline-first logic
- *  8.  Online dot — requires lat+lng
- *  9.  Route points count — safe (|| []).length
- *  10. Timestamp fallback preserved
+ * ALL FIXES:
+ *  B1  isGoodBattery: 0 valid, null/undefined/NaN excluded
+ *  B2  fmtBattery: 0→"0%", null/undefined→"--"
+ *  B3  Polling merge: preserve existing battery only when incoming is null/undefined
+ *  B4  Socket: battery=0 valid; undefined→preserve existing
+ *  B5  Selected card: same guard
+ *  S1  Speed 0 is VALID — shown as "0 km/h" not "—" in detail card
+ *  S2  Speed in sidebar chip only shown when > 0 (no chip for stationary)
+ *  #1  isOnline only when lat+lng real
+ *  #2  Selected isOnline same guard
+ *  #4  Speed typeof guard
+ *  #5  Polling online: uses lastSeen (always fresh) not lastLocation.timestamp
+ *  #6  Marker icon: requires lastLocation.lat
+ *  #7  Popup network: offline-first
+ *  #8  Active dot: requires lat+lng
+ *  #9  Route pts: (|| []).length
+ *  #10 Timestamp fallback preserved
+ *  M1  Marker key includes lat+lng
+ *  M2  New object reference on socket update
+ *  M3  Cluster key tied to position hash
  */
 
 import React, { useEffect, useState, useRef, useCallback } from "react";
@@ -27,18 +31,13 @@ import api from "../services/api";
 import { useSocket } from "../context/SocketContext";
 import LoadingSpinner from "../components/Shared/LoadingSpinner";
 import {
-  MapContainer,
-  TileLayer,
-  Marker,
-  Popup,
-  Polyline,
-  useMap,
+  MapContainer, TileLayer, Marker, Popup, Polyline, useMap,
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import MarkerClusterGroup from "react-leaflet-cluster";
 
-// ─── Fix Leaflet default icons ────────────────────────────────────────────────
+// ─── Leaflet icon fix ──────────────────────────────────────────────────────────
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
@@ -46,75 +45,140 @@ L.Icon.Default.mergeOptions({
   shadowUrl:     "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
 });
 
-// ─── Custom icons ─────────────────────────────────────────────────────────────
-const makeIcon = (className) =>
-  new L.Icon({
-    iconUrl:     "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-    iconSize:    [25, 41],
-    iconAnchor:  [12, 41],
-    popupAnchor: [1, -34],
-    shadowUrl:   "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-    className,
-  });
-
-const liveIcon    = makeIcon("lm-live");
-const weakIcon    = makeIcon("lm-weak");
-const offlineIcon = makeIcon("lm-offline");
-
-// FIX #6: require lastLocation.lat for live icon
-const getIcon = (emp) => {
-  if (!emp.isOnline || !emp.lastLocation?.lat) return offlineIcon;
-  if (emp.networkQuality === "weak")            return weakIcon;
-  return liveIcon;
+// ─── Map tile configs ──────────────────────────────────────────────────────────
+const TILES = {
+  color: {
+    url:   "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
+    attr:  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, Tiles courtesy of HOT',
+    label: "Satellite view",
+    icon:  "🛰",
+  },
+  satellite: {
+    url:   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attr:  "Tiles &copy; Esri &mdash; Source: Esri, USGS, NOAA",
+    label: "Map view",
+    icon:  "🗺",
+  },
 };
 
-// ─── Map auto-fly ─────────────────────────────────────────────────────────────
+// ─── Custom SVG markers ────────────────────────────────────────────────────────
+const makePinIcon = (fillColor, borderColor, pulse) =>
+  new L.DivIcon({
+    className: "",
+    iconSize:    [38, 50],
+    iconAnchor:  [19, 50],
+    popupAnchor: [0, -52],
+    html: `
+      <svg width="38" height="50" viewBox="0 0 38 50" xmlns="http://www.w3.org/2000/svg">
+        ${pulse ? `
+          <circle cx="19" cy="19" r="17" fill="${fillColor}" opacity="0.15">
+            <animate attributeName="r"       values="10;22;10" dur="2.2s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0.2;0;0.2" dur="2.2s" repeatCount="indefinite"/>
+          </circle>` : ""}
+        <circle cx="19" cy="19" r="15" fill="${borderColor}" />
+        <circle cx="19" cy="19" r="11" fill="${fillColor}" />
+        <circle cx="19" cy="19" r="5"  fill="white" />
+        <path d="M19 34 L13 24 L25 24 Z" fill="${fillColor}" />
+        <path d="M19 34 L13 24 L25 24 Z" fill="${borderColor}" opacity="0.3" />
+      </svg>`,
+  });
+
+const ICONS = {
+  live:    makePinIcon("#10b981", "#065f46", true),
+  weak:    makePinIcon("#f59e0b", "#92400e", true),
+  offline: makePinIcon("#94a3b8", "#475569", false),
+};
+
+const getIcon = (emp) => { // FIX #6
+  if (!emp.isOnline || !emp.lastLocation?.lat) return ICONS.offline;
+  if (emp.networkQuality === "weak")            return ICONS.weak;
+  return ICONS.live;
+};
+
+// ─── Auto-fly ─────────────────────────────────────────────────────────────────
 function FlyToSelected({ selected, autoFollow }) {
   const map = useMap();
   useEffect(() => {
     const { lat, lng } = selected?.lastLocation || {};
-    if (lat && lng && autoFollow) map.flyTo([lat, lng], 17, { duration: 1.5 });
-  }, [selected, autoFollow, map]);
+    if (lat && lng && autoFollow) map.flyTo([lat, lng], 17, { duration: 1.2 });
+  }, [selected?.lastLocation?.lat, selected?.lastLocation?.lng, autoFollow, map]);
   return null;
 }
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
-const fmtCoord = (v) => (v == null ? "—" : Number(v).toFixed(5));
+const fmtCoord = (v) => (v == null ? "—" : Number(v).toFixed(6));
 
-// FIX B4 / #3: b <= 0 shows "--", handles null from backend
+// B2: 0 → "0%", null/undefined → "--"
 const fmtBattery = (b) => {
-  if (typeof b !== "number" || b <= 0 || b > 100) return "--";
-  return `${Math.round(b)}%`;
+  if (b === null || b === undefined) return "--";
+  const n = Number(b);
+  if (isNaN(n) || n < 0 || n > 100) return "--";
+  return `${Math.round(n)}%`;
 };
 
-// Is this a real, valid battery reading?
-const isGoodBattery = (b) => typeof b === "number" && b > 0 && b <= 100;
+// B1: 0 is valid
+const isGoodBattery = (b) => {
+  if (b === null || b === undefined) return false;
+  const n = Number(b);
+  return !isNaN(n) && n >= 0 && n <= 100;
+};
+
+// S1: Speed 0 is valid — show "0 km/h"
+const fmtSpeed = (s) => {
+  if (typeof s !== "number" || isNaN(s) || s < 0) return "—";
+  return `${s} km/h`;
+};
 
 const fmtDate = (date) => {
   const d = new Date(date);
   if (isNaN(d.getTime())) return new Date().toISOString().split("T")[0];
-  return (
-    d.getFullYear() +
-    "-" + String(d.getMonth() + 1).padStart(2, "0") +
-    "-" + String(d.getDate()).padStart(2, "0")
-  );
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 };
 
 const batteryColor = (b) => {
   if (!isGoodBattery(b)) return "#94a3b8";
-  if (b < 20) return "#ef4444";
-  if (b < 50) return "#f59e0b";
-  return "#22c55e";
+  const n = Number(b);
+  if (n < 20) return "#ef4444";
+  if (n < 50) return "#f59e0b";
+  return "#10b981";
 };
 
-// ─── Auth headers ─────────────────────────────────────────────────────────────
-const authHeaders        = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
-const authHeadersNoCache = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}`, "Cache-Control": "no-cache" } });
+const batteryBg = (b) => {
+  if (!isGoodBattery(b)) return "#f8fafc";
+  const n = Number(b);
+  if (n < 20) return "#fef2f2";
+  if (n < 50) return "#fffbeb";
+  return "#f0fdf4";
+};
 
-// ─── Component ────────────────────────────────────────────────────────────────
+const relTime = (ts) => {
+  if (!ts) return null;
+  const s = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+  if (s < 10)    return "Just now";
+  if (s < 60)    return `${s}s ago`;
+  if (s < 3600)  return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+};
+
+// ─── Auth ──────────────────────────────────────────────────────────────────────
+const authH        = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+const authHNoCache = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}`, "Cache-Control": "no-cache" } });
+
+// ─── Re-render every 30s for relative times ───────────────────────────────────
+function useTick(ms = 30000) {
+  const [, set] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => set(t => t + 1), ms);
+    return () => clearInterval(id);
+  }, [ms]);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 export default function LiveMapPage() {
   const { socket, on, off } = useSocket();
   const mapRef = useRef();
+  useTick(30000);
 
   const [employees,     setEmployees]     = useState([]);
   const [paths,         setPaths]         = useState({});
@@ -126,43 +190,59 @@ export default function LiveMapPage() {
   const [autoFollow,    setAutoFollow]    = useState(true);
   const [historyDate,   setHistoryDate]   = useState(() => new Date().toISOString().split("T")[0]);
   const [historyPoints, setHistoryPoints] = useState([]);
+  const [tab,           setTab]           = useState("team");
+  const [tileKey,       setTileKey]       = useState("color");
 
-  // ── Fetch live snapshot ───────────────────────────────────────────────────
+  // ── Fetch snapshot ────────────────────────────────────────────────────────
   const fetchEmployees = useCallback(async (bustCache = false) => {
     try {
-      const headers = bustCache ? authHeadersNoCache() : authHeaders();
-      const res     = await api.get("/locations/live", headers);
+      const res     = await api.get("/locations/live", bustCache ? authHNoCache() : authH());
       const newData = res.data?.employees || [];
 
       setEmployees(prev =>
         newData.map(incoming => {
           const existing = prev.find(e => e._id === incoming._id);
-          if (!existing) return incoming;
+          if (!existing) return { ...incoming };
 
-          // FIX #5: require lat+lng for online=true
+          // FIX #5: use lastSeen for online check
           let online = existing.isOnline;
-          if (
-            incoming.lastLocation?.timestamp &&
-            incoming.lastLocation?.lat &&
-            incoming.lastLocation?.lng
-          ) {
-            const age = Date.now() - new Date(incoming.lastLocation.timestamp).getTime();
+          if (incoming.lastLocation?.lat && incoming.lastLocation?.lng) {
+            const ts  = incoming.lastSeen || incoming.lastLocation?.timestamp;
+            const age = ts ? Date.now() - new Date(ts).getTime() : Infinity;
             if (age < 10 * 60 * 1000) online = true;
           }
 
-          // FIX B1: never overwrite a good battery with null/0
+          // FIX B3: preserve existing battery only when incoming is null/undefined
           const battery = isGoodBattery(incoming.battery)
             ? incoming.battery
-            : existing.battery;
+            : isGoodBattery(existing.battery)
+              ? existing.battery
+              : incoming.battery;
 
-          return {
-            ...existing,
-            ...incoming,
-            battery,          // B1: sticky good value
-            isOnline: online, // #5: no fake online
-          };
+          // FIX S1: speed 0 from API is valid — don't fall back
+          const speed = typeof incoming.speed === "number" ? incoming.speed : existing.speed;
+
+          return { ...existing, ...incoming, battery, speed, isOnline: online };
         })
       );
+
+      // Also sync selected card from fresh data
+      setSelected(prev => {
+        if (!prev) return prev;
+        const fresh = newData.find(e => e._id === prev._id);
+        if (!fresh) return prev;
+        return {
+          ...prev,
+          battery: isGoodBattery(fresh.battery) ? fresh.battery : (isGoodBattery(prev.battery) ? prev.battery : fresh.battery),
+          speed:   typeof fresh.speed === "number" ? fresh.speed : prev.speed,
+          lastLocation:   fresh.lastLocation   ?? prev.lastLocation,
+          networkQuality: fresh.networkQuality ?? prev.networkQuality,
+          isOnline:       fresh.isOnline       ?? prev.isOnline,
+          lastSeen:       fresh.lastSeen       ?? prev.lastSeen,
+          lastPingTime:   fresh.lastPingTime   ?? prev.lastPingTime,
+        };
+      });
+
       setLastUpdated(new Date());
     } catch (err) {
       console.error("fetchEmployees:", err.message);
@@ -171,59 +251,50 @@ export default function LiveMapPage() {
     }
   }, []);
 
-  // ── Polling: 30s REST fallback ─────────────────────────────────────────────
   useEffect(() => {
     fetchEmployees();
     const id = setInterval(() => fetchEmployees(false), 30000);
     return () => clearInterval(id);
   }, [fetchEmployees]);
 
-  // ── Socket real-time updates ───────────────────────────────────────────────
+  // ── Socket ────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!socket) return;
 
     const onLocationUpdate = (data) => {
       setLastUpdated(new Date());
-
-      // FIX B2: only accept battery if genuinely valid (>0)
-      const incomingBattery =
-        typeof data.battery === "number" && data.battery > 0 && data.battery <= 100
-          ? data.battery
-          : undefined; // undefined = preserve existing
-
-      // FIX #4: typeof guard for speed
-      const incomingSpeed =
-        typeof data.speed === "number" ? data.speed : undefined;
-
-      // FIX #1: only online if lat+lng are real
       const hasCoords = !!(data.lat && data.lng);
 
-      setEmployees(prev =>
-        prev.map(emp => {
-          if (emp._id !== data.employeeId && emp.employeeId !== data.employeeId)
-            return emp;
-          return {
-            ...emp,
-            lastLocation: {
-              lat:       data.lat,
-              lng:       data.lng,
-              timestamp: data.timestamp || new Date().toISOString(), // FIX #10
-            },
-            // FIX B2: sticky — never wipe good battery with undefined/0
-            battery:        incomingBattery !== undefined ? incomingBattery : emp.battery,
-            speed:          incomingSpeed   !== undefined ? incomingSpeed   : (emp.speed ?? 0),
-            networkQuality: data.networkQuality ?? emp.networkQuality,
-            isTracking:     true,
-            isOnline:       hasCoords ? true : emp.isOnline, // FIX #1
-          };
-        })
-      );
+      // FIX B4: undefined battery → don't overwrite
+      const incomingBattery = isGoodBattery(data.battery) ? data.battery : undefined;
+      // FIX #4 + S1: speed 0 valid
+      const incomingSpeed   = typeof data.speed === "number" ? data.speed : undefined;
 
-      // FIX #2 + B3: selected employee card sync
+      // FIX M2: always new reference
+      setEmployees(prev => prev.map(emp => {
+        if (emp._id !== data.employeeId && emp.employeeId !== data.employeeId) return emp;
+        return {
+          ...emp,
+          lastLocation: {
+            lat:       data.lat,
+            lng:       data.lng,
+            timestamp: data.timestamp || new Date().toISOString(), // FIX #10
+          },
+          battery:        incomingBattery !== undefined
+            ? incomingBattery
+            : (isGoodBattery(emp.battery) ? emp.battery : null),
+          speed:          incomingSpeed !== undefined ? incomingSpeed : (emp.speed ?? 0),
+          networkQuality: data.networkQuality ?? emp.networkQuality,
+          isTracking:     true,
+          isOnline:       hasCoords ? true : emp.isOnline, // FIX #1
+          lastPingTime:   data.timestamp || new Date().toISOString(),
+        };
+      }));
+
+      // FIX B5 + #2: selected card
       setSelected(prev => {
         if (!prev) return prev;
-        if (prev._id !== data.employeeId && prev.employeeId !== data.employeeId)
-          return prev;
+        if (prev._id !== data.employeeId && prev.employeeId !== data.employeeId) return prev;
         return {
           ...prev,
           lastLocation: {
@@ -231,41 +302,40 @@ export default function LiveMapPage() {
             lng:       data.lng,
             timestamp: data.timestamp || new Date().toISOString(),
           },
-          battery:        incomingBattery !== undefined ? incomingBattery : prev.battery, // FIX B3
-          speed:          incomingSpeed   !== undefined ? incomingSpeed   : (prev.speed ?? 0),
+          battery:        incomingBattery !== undefined
+            ? incomingBattery
+            : (isGoodBattery(prev.battery) ? prev.battery : null),
+          speed:          incomingSpeed !== undefined ? incomingSpeed : (prev.speed ?? 0),
           networkQuality: data.networkQuality ?? prev.networkQuality,
           isOnline:       hasCoords ? true : prev.isOnline, // FIX #2
           isTracking:     true,
+          lastPingTime:   data.timestamp || new Date().toISOString(),
         };
       });
 
-      // Append to live path
-      setPaths(prev => {
-        const current  = prev[data.employeeId] || [];
-        const newPoint = [data.lat, data.lng];
-        const last     = current[current.length - 1];
-        if (last && last[0] === newPoint[0] && last[1] === newPoint[1]) return prev;
-        return { ...prev, [data.employeeId]: [...current, newPoint].slice(-500) };
-      });
+      if (hasCoords) {
+        setPaths(prev => {
+          const cur  = prev[data.employeeId] || [];
+          const pt   = [data.lat, data.lng];
+          const last = cur[cur.length - 1];
+          if (last && last[0] === pt[0] && last[1] === pt[1]) return prev;
+          return { ...prev, [data.employeeId]: [...cur, pt].slice(-500) };
+        });
+      }
     };
 
-    const onOffline = (data) =>
-      setEmployees(prev =>
-        prev.map(emp =>
-          emp._id === data.employeeId || emp.employeeId === data.employeeId
-            ? { ...emp, isTracking: false, isOnline: false }
-            : emp
-        )
-      );
-
-    const onOnline = (data) =>
-      setEmployees(prev =>
-        prev.map(emp =>
-          emp._id === data.employeeId || emp.employeeId === data.employeeId
-            ? { ...emp, isOnline: true }
-            : emp
-        )
-      );
+    const onOffline = (data) => setEmployees(prev =>
+      prev.map(emp =>
+        emp._id === data.employeeId || emp.employeeId === data.employeeId
+          ? { ...emp, isTracking: false, isOnline: false } : emp
+      )
+    );
+    const onOnline = (data) => setEmployees(prev =>
+      prev.map(emp =>
+        emp._id === data.employeeId || emp.employeeId === data.employeeId
+          ? { ...emp, isOnline: true } : emp
+      )
+    );
 
     on("location:update",         onLocationUpdate);
     on("system:employee-offline", onOffline);
@@ -277,18 +347,13 @@ export default function LiveMapPage() {
     };
   }, [socket, on, off]);
 
-  // ── Route history ──────────────────────────────────────────────────────────
+  // ── Route history ─────────────────────────────────────────────────────────
   const loadRouteHistory = useCallback(async (employeeId, date = historyDate) => {
     if (!employeeId) return;
     try {
       setPathLoading(true);
-      const res = await api.get(
-        `/locations/history/${employeeId}?date=${fmtDate(date)}`,
-        authHeaders()
-      );
-      const coords = (res.data?.data || [])
-        .filter(l => l.lat && l.lng)
-        .map(l => [l.lat, l.lng]);
+      const res    = await api.get(`/locations/history/${employeeId}?date=${fmtDate(date)}`, authH());
+      const coords = (res.data?.data || []).filter(l => l.lat && l.lng).map(l => [l.lat, l.lng]);
       setHistoryPoints([]);
       setHistoryPoints(coords);
       setPaths(prev => ({ ...prev, [employeeId]: coords }));
@@ -301,189 +366,342 @@ export default function LiveMapPage() {
 
   useEffect(() => {
     if (selected) loadRouteHistory(selected.employeeId);
-  }, [selected, loadRouteHistory]);
+  }, [selected?.employeeId, loadRouteHistory]);
 
   useEffect(() => {
     if (!selected) return;
     const id = setInterval(() => loadRouteHistory(selected.employeeId, historyDate), 30000);
     return () => clearInterval(id);
-  }, [selected, historyDate, loadRouteHistory]);
+  }, [selected?.employeeId, historyDate, loadRouteHistory]);
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
-  const handleSelect  = (emp) => setSelected(emp);
-  const clearSelected = () => { setSelected(null); setHistoryPoints([]); };
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const handleSelect  = (emp) => { setSelected(emp); setTab("detail"); };
+  const clearSelected = ()    => { setSelected(null); setHistoryPoints([]); setTab("team"); };
 
-  const filteredEmployees = employees.filter(emp =>
-    emp.name?.toLowerCase().includes(search.toLowerCase()) ||
-    emp.employeeId?.toLowerCase().includes(search.toLowerCase())
+  const filtered    = employees.filter(e =>
+    e.name?.toLowerCase().includes(search.toLowerCase()) ||
+    e.employeeId?.toLowerCase().includes(search.toLowerCase())
   );
-
   const onlineCount = employees.filter(e => e.isOnline).length;
+
+  // M3
+  const clusterKey = employees
+    .map(e => `${e._id}:${e.lastLocation?.lat?.toFixed(4)}:${e.lastLocation?.lng?.toFixed(4)}`)
+    .join("|");
+
+  const tile = TILES[tileKey];
+  const isSat = tileKey === "satellite";
 
   if (loading) return <LoadingSpinner fullScreen text="Loading live map…" />;
 
-  // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div style={{ display: "flex", height: "100vh", fontFamily: "'DM Sans','Segoe UI',sans-serif", background: "#f1f5f9" }}>
+    <div style={S.root}>
+      <style>{GLOBAL_CSS}</style>
 
       {/* ══ SIDEBAR ══════════════════════════════════════════════════════════ */}
-      <aside style={{
-        width: 304, flexShrink: 0,
-        display: "flex", flexDirection: "column",
-        background: "#ffffff",
-        borderRight: "1px solid #e2e8f0",
-        boxShadow: "2px 0 16px rgba(15,23,42,0.05)",
-        zIndex: 10,
-      }}>
+      <aside style={S.sidebar}>
 
-        {/* Header */}
-        <div style={{ padding: "18px 16px 14px", borderBottom: "1px solid #f1f5f9" }}>
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-            <div>
-              <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#0f172a", letterSpacing: "-0.4px" }}>
-                Live Tracking
-              </h2>
-              <p style={{ margin: "3px 0 0", fontSize: 11, color: "#94a3b8" }}>
-                Real-time employee locations
-              </p>
-            </div>
-            <div style={{
-              background: onlineCount > 0 ? "#f0fdf4" : "#f8fafc",
-              color:      onlineCount > 0 ? "#16a34a"  : "#64748b",
-              border:    `1px solid ${onlineCount > 0 ? "#bbf7d0" : "#e2e8f0"}`,
-              fontSize: 11, fontWeight: 700,
-              padding: "4px 10px", borderRadius: 20, whiteSpace: "nowrap",
-            }}>
-              {onlineCount} live
-            </div>
-          </div>
-
-          {/* Search */}
-          <div style={{ position: "relative" }}>
-            <svg style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}
-              width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth={2.5} strokeLinecap="round">
-              <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+        {/* Brand bar */}
+        <div style={S.brand}>
+          <div style={S.brandIcon}>
+            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth={2.5} strokeLinecap="round">
+              <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+              <circle cx="12" cy="9" r="2.5" fill="white"/>
             </svg>
-            <input
-              type="text"
-              placeholder="Search by name or ID…"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              style={{
-                width: "100%", boxSizing: "border-box",
-                padding: "8px 10px 8px 30px",
-                border: "1.5px solid #e2e8f0", borderRadius: 8,
-                fontSize: 13, color: "#0f172a", background: "#f8fafc",
-                outline: "none", transition: "border-color 0.15s",
-              }}
-              onFocus={e => (e.target.style.borderColor = "#818cf8")}
-              onBlur={e  => (e.target.style.borderColor = "#e2e8f0")}
-            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <p style={{ margin: 0, fontWeight: 800, fontSize: 13, color: "#0f172a", letterSpacing: "-0.4px" }}>SthitiX</p>
+            <p style={{ margin: 0, fontSize: 9, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.8px" }}>Live Tracking</p>
+          </div>
+          <div style={{
+            display: "inline-flex", alignItems: "center", gap: 5,
+            padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+            background: onlineCount > 0 ? "#ecfdf5" : "#f8fafc",
+            color:      onlineCount > 0 ? "#059669" : "#64748b",
+            border:    `1px solid ${onlineCount > 0 ? "#a7f3d0" : "#e2e8f0"}`,
+          }}>
+            <span style={{ width: 5, height: 5, borderRadius: "50%", background: onlineCount > 0 ? "#10b981" : "#cbd5e1", display: "inline-block",
+              boxShadow: onlineCount > 0 ? "0 0 0 3px rgba(16,185,129,0.2)" : "none" }} />
+            {onlineCount}/{employees.length} online
           </div>
         </div>
 
-        {/* Last updated strip */}
-        {lastUpdated && (
-          <div style={{
-            padding: "5px 16px", fontSize: 11, color: "#94a3b8",
-            background: "#fafbfd", borderBottom: "1px solid #f1f5f9",
-            display: "flex", alignItems: "center", gap: 6,
-          }}>
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#22c55e", display: "inline-block" }} />
-            Updated {lastUpdated.toLocaleTimeString()}
-          </div>
+        {/* Tabs */}
+        <div style={S.tabBar}>
+          {[
+            { key: "team",   label: "Team",   badge: onlineCount > 0 ? onlineCount : null },
+            { key: "detail", label: "Detail", disabled: !selected },
+          ].map(t => (
+            <button key={t.key} disabled={!!t.disabled}
+              onClick={() => !t.disabled && setTab(t.key)}
+              style={{ ...S.tab, ...(tab === t.key ? S.tabActive : {}), opacity: t.disabled ? 0.3 : 1 }}
+            >
+              {t.label}
+              {t.badge && (
+                <span style={{ marginLeft: 4, background: "#6366f1", color: "#fff", fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 10 }}>
+                  {t.badge}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {/* ── TEAM TAB ─────────────────────────────────────────────────────── */}
+        {tab === "team" && (
+          <>
+            <div style={{ padding: "10px 14px 8px" }}>
+              <div style={{ position: "relative" }}>
+                <svg style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}
+                  width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth={2.5} strokeLinecap="round">
+                  <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                </svg>
+                <input type="text" placeholder="Search employee…" value={search}
+                  onChange={e => setSearch(e.target.value)} style={S.searchInput}
+                  onFocus={e => (e.target.style.borderColor = "#6366f1")}
+                  onBlur={e  => (e.target.style.borderColor = "#e2e8f0")}
+                />
+              </div>
+            </div>
+
+            {lastUpdated && (
+              <div style={S.syncStrip}>
+                <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#10b981", display: "inline-block" }} />
+                Synced {lastUpdated.toLocaleTimeString()}
+              </div>
+            )}
+
+            <div style={{ flex: 1, overflowY: "auto" }}>
+              {filtered.length === 0 && (
+                <div style={{ padding: 40, textAlign: "center" }}>
+                  <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" strokeWidth={1.5}>
+                    <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                  </svg>
+                  <p style={{ margin: "8px 0 0", fontSize: 12, color: "#94a3b8" }}>No employees found</p>
+                </div>
+              )}
+
+              {filtered.map(emp => {
+                const hasLoc = !!(emp.lastLocation?.lat && emp.lastLocation?.lng);
+                const isSel  = selected?._id === emp._id;
+                const active = !!(emp.isOnline && hasLoc); // FIX #8
+                const batOk  = isGoodBattery(emp.battery);
+                const rt     = relTime(emp.lastPingTime || emp.lastSeen || emp.lastLocation?.timestamp);
+
+                return (
+                  <div key={emp._id} className="emp-row" onClick={() => handleSelect(emp)}
+                    style={{
+                      display: "flex", alignItems: "flex-start", gap: 10,
+                      padding: "10px 14px", cursor: "pointer",
+                      borderBottom: "1px solid #f8fafc",
+                      borderLeft: `3px solid ${isSel ? "#6366f1" : "transparent"}`,
+                      background:  isSel ? "#fafaff" : "transparent",
+                      transition:  "background 0.1s",
+                    }}
+                  >
+                    {/* Avatar */}
+                    <div style={{ position: "relative", flexShrink: 0 }}>
+                      <div style={{
+                        width: 36, height: 36, borderRadius: "50%",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontWeight: 700, fontSize: 14,
+                        background: isSel ? "#ede9fe" : active ? "#ecfdf5" : "#f1f5f9",
+                        color:      isSel ? "#6366f1" : active ? "#059669" : "#64748b",
+                        border:    `2px solid ${isSel ? "#c4b5fd" : active ? "#a7f3d0" : "#e2e8f0"}`,
+                      }}>
+                        {emp.name?.charAt(0)?.toUpperCase()}
+                      </div>
+                      <span style={{
+                        position: "absolute", bottom: -1, right: -1,
+                        width: 10, height: 10, borderRadius: "50%",
+                        background: active ? "#10b981" : "#e2e8f0",
+                        border: "2px solid #fff",
+                        boxShadow: active ? "0 0 0 2px rgba(16,185,129,0.25)" : "none",
+                      }} />
+                    </div>
+
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 4 }}>
+                        <p style={{ margin: 0, fontWeight: 600, fontSize: 13, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {emp.name}
+                        </p>
+                        {rt && <span style={{ fontSize: 10, color: "#94a3b8", flexShrink: 0 }}>{rt}</span>}
+                      </div>
+                      <p style={{ margin: "1px 0 5px", fontSize: 10, color: "#94a3b8" }}>{emp.employeeId}</p>
+
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "3px 5px" }}>
+                        {batOk && (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: batteryBg(emp.battery), color: batteryColor(emp.battery) }}>
+                            <BatteryMini pct={Number(emp.battery)} />
+                            {fmtBattery(emp.battery)}
+                          </span>
+                        )}
+                        {!hasLoc && <Chip bg="#fffbeb" color="#d97706">No GPS</Chip>}
+                        {/* S2: chip only when moving */}
+                        {typeof emp.speed === "number" && emp.speed > 0 && (
+                          <Chip bg="#f0f9ff" color="#0284c7">{emp.speed} km/h</Chip>
+                        )}
+                        {emp.networkQuality === "weak" && <Chip bg="#fffbeb" color="#d97706">Weak signal</Chip>}
+                        {!emp.isOnline && <Chip bg="#fef2f2" color="#dc2626">Offline</Chip>}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
 
-        {/* Employee list */}
-        <div style={{ flex: 1, overflowY: "auto" }}>
-          {filteredEmployees.length === 0 && (
-            <div style={{ padding: 40, textAlign: "center", color: "#94a3b8", fontSize: 13 }}>
-              No employees found
-            </div>
-          )}
+        {/* ── DETAIL TAB ───────────────────────────────────────────────────── */}
+        {tab === "detail" && selected && (
+          <div style={{ flex: 1, overflowY: "auto" }}>
 
-          {filteredEmployees.map(emp => {
-            const hasLocation = !!(emp.lastLocation?.lat && emp.lastLocation?.lng);
-            const isSelected  = selected?._id === emp._id;
-            // FIX #8: require lat+lng for active green dot
-            const active = !!(emp.isOnline && emp.lastLocation?.lat && emp.lastLocation?.lng);
-            const batOk  = isGoodBattery(emp.battery);
-
-            return (
-              <div
-                key={emp._id}
-                onClick={() => handleSelect(emp)}
-                style={{
-                  padding: "11px 16px", cursor: "pointer",
-                  borderBottom: "1px solid #f1f5f9",
-                  borderLeft: `3px solid ${isSelected ? "#6366f1" : "transparent"}`,
-                  background: isSelected ? "#f5f3ff" : "transparent",
-                  transition: "background 0.1s",
-                }}
-                onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = "#f8fafc"; }}
-                onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{
-                    width: 36, height: 36, borderRadius: "50%", flexShrink: 0,
-                    background: isSelected ? "#ede9fe" : "#f1f5f9",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontWeight: 700, fontSize: 14,
-                    color: isSelected ? "#6366f1" : "#64748b",
-                  }}>
-                    {emp.name?.charAt(0)?.toUpperCase()}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ margin: 0, fontWeight: 600, fontSize: 13, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {emp.name}
-                    </p>
-                    <p style={{ margin: "1px 0 0", fontSize: 11, color: "#94a3b8" }}>
-                      {emp.employeeId}
-                    </p>
-                  </div>
-                  <div style={{
-                    width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-                    background: active ? "#22c55e" : "#e2e8f0",
-                    boxShadow: active ? "0 0 0 3px rgba(34,197,94,0.18)" : "none",
-                  }} />
+            {/* Header */}
+            <div style={{ padding: "14px 14px 12px", borderBottom: "1px solid #f1f5f9" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 10 }}>
+                <div style={{
+                  width: 44, height: 44, borderRadius: "50%", flexShrink: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontWeight: 800, fontSize: 18,
+                  background: selected.isOnline ? "#ecfdf5" : "#f1f5f9",
+                  color:      selected.isOnline ? "#059669" : "#64748b",
+                  border:    `2px solid ${selected.isOnline ? "#a7f3d0" : "#e2e8f0"}`,
+                }}>
+                  {selected.name?.charAt(0)?.toUpperCase()}
                 </div>
-
-                <div style={{ marginTop: 6, marginLeft: 46, display: "flex", flexWrap: "wrap", gap: "4px 10px" }}>
-                  {batOk && (
-                    <span style={{ fontSize: 11, color: emp.battery < 20 ? "#ef4444" : "#64748b", fontWeight: 500, display: "flex", alignItems: "center", gap: 3 }}>
-                      <BatteryMini pct={emp.battery} />
-                      {fmtBattery(emp.battery)}
-                    </span>
-                  )}
-                  {!hasLocation && (
-                    <span style={{ fontSize: 11, color: "#f59e0b", fontWeight: 500 }}>No GPS</span>
-                  )}
-                  {/* FIX #4 */}
-                  {typeof emp.speed === "number" && emp.speed > 0 && (
-                    <span style={{ fontSize: 11, color: "#64748b" }}>{emp.speed} km/h</span>
-                  )}
-                  {emp.networkQuality === "weak" && (
-                    <span style={{ fontSize: 11, color: "#f59e0b", fontWeight: 500 }}>Weak</span>
-                  )}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: "#0f172a", letterSpacing: "-0.3px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {selected.name}
+                  </p>
+                  <p style={{ margin: "2px 0 0", fontSize: 10, color: "#94a3b8" }}>{selected.employeeId}</p>
                 </div>
               </div>
-            );
-          })}
-        </div>
 
-        {selected && (
-          <div style={{ padding: "12px 16px", borderTop: "1px solid #f1f5f9" }}>
-            <button
-              onClick={clearSelected}
-              style={{
-                width: "100%", padding: "8px 0",
-                background: "#f5f3ff", border: "1.5px solid #ddd6fe",
-                borderRadius: 8, color: "#6366f1", fontSize: 12,
-                fontWeight: 600, cursor: "pointer",
-              }}
-            >
-              Show all employees
-            </button>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <StatusPill active={selected.isOnline} activeText="Live" inactiveText="Offline"
+                  activeBg="#ecfdf5" inactiveBg="#fef2f2"
+                  activeColor="#059669" inactiveColor="#dc2626"
+                  activeBorder="#a7f3d0" inactiveBorder="#fecaca" />
+                {selected.isOnline && (
+                  <StatusPill
+                    active={selected.networkQuality !== "weak"}
+                    activeText="Good signal" inactiveText="Weak signal"
+                    activeBg="#f0fdf4" inactiveBg="#fffbeb"
+                    activeColor="#059669" inactiveColor="#d97706"
+                    activeBorder="#a7f3d0" inactiveBorder="#fde68a"
+                  />
+                )}
+              </div>
+            </div>
+
+            {/* ── Stats grid (all 6 always visible) ── */}
+            <div style={{ padding: "12px 14px 0" }}>
+              <p style={S.sectionLabel}>Live Data</p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>
+
+                <DetailStat label="Latitude"
+                  value={fmtCoord(selected.lastLocation?.lat)} />
+
+                <DetailStat label="Longitude"
+                  value={fmtCoord(selected.lastLocation?.lng)} />
+
+                {/* Battery — always shown, "--" if unknown */}
+                <DetailStat
+                  label="Battery"
+                  value={fmtBattery(selected.battery)}
+                  valueColor={batteryColor(selected.battery)}
+                  bg={batteryBg(selected.battery)}
+                  extra={
+                    isGoodBattery(selected.battery)
+                      ? <BatteryBar pct={Number(selected.battery)} />
+                      : <p style={{ margin: "4px 0 0", fontSize: 9, color: "#94a3b8" }}>Awaiting ping…</p>
+                  }
+                />
+
+                {/* Speed — S1: 0 is valid, always shown */}
+                <DetailStat
+                  label="Speed"
+                  value={fmtSpeed(selected.speed)}
+                  valueColor={
+                    typeof selected.speed === "number" && selected.speed > 5
+                      ? "#0284c7" : "#0f172a"
+                  }
+                  bg={typeof selected.speed === "number" && selected.speed > 5 ? "#f0f9ff" : "#f8fafc"}
+                  extra={
+                    typeof selected.speed === "number" && selected.speed === 0
+                      ? <p style={{ margin: "4px 0 0", fontSize: 9, color: "#94a3b8" }}>Stationary</p>
+                      : null
+                  }
+                />
+
+                {/* FIX #9 */}
+                <DetailStat
+                  label="Route pts"
+                  value={pathLoading ? "…" : String((paths[selected.employeeId] || []).length)}
+                />
+
+                <DetailStat
+                  label="Network"
+                  value={!selected.isOnline ? "Offline" : selected.networkQuality === "weak" ? "Weak" : "Good"} // FIX #7
+                  valueColor={!selected.isOnline ? "#dc2626" : selected.networkQuality === "weak" ? "#d97706" : "#059669"}
+                />
+              </div>
+            </div>
+
+            {/* Last ping info */}
+            {(selected.lastPingTime || selected.lastLocation?.timestamp) && (
+              <div style={{ padding: "10px 14px 0" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", background: "#f8fafc", borderRadius: 8, border: "1px solid #f1f5f9", fontSize: 11, color: "#64748b" }}>
+                  <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth={2} strokeLinecap="round">
+                    <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+                  </svg>
+                  <span>
+                    Last ping: <b style={{ color: "#0f172a" }}>
+                      {new Date(selected.lastPingTime || selected.lastLocation.timestamp).toLocaleTimeString()}
+                    </b>
+                    {" · "}
+                    {relTime(selected.lastPingTime || selected.lastLocation?.timestamp)}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Route history */}
+            <div style={{ padding: "12px 14px 0" }}>
+              <p style={S.sectionLabel}>Route History</p>
+              <div style={{ background: "#f8fafc", borderRadius: 10, padding: "10px 11px", border: "1px solid #f1f5f9" }}>
+                <input type="date" value={historyDate} onChange={e => setHistoryDate(e.target.value)}
+                  style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", borderRadius: 7, border: "1.5px solid #e2e8f0", fontSize: 12, color: "#0f172a", background: "#fff", outline: "none", marginBottom: 7 }}
+                />
+                <button onClick={() => loadRouteHistory(selected.employeeId)} disabled={pathLoading}
+                  style={{ width: "100%", padding: "8px 0", background: pathLoading ? "#ede9fe" : "#6366f1", color: pathLoading ? "#6366f1" : "#fff", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: pathLoading ? "not-allowed" : "pointer" }}>
+                  {pathLoading ? "Loading…" : "Load Route"}
+                </button>
+              </div>
+            </div>
+
+            {/* Controls */}
+            <div style={{ padding: "11px 14px 0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#64748b", cursor: "pointer", userSelect: "none" }}>
+                <input type="checkbox" checked={autoFollow} onChange={e => setAutoFollow(e.target.checked)} style={{ accentColor: "#6366f1" }} />
+                Auto-follow
+              </label>
+              <button
+                onClick={() => {
+                  const { lat, lng } = selected.lastLocation || {};
+                  if (lat && lng && mapRef.current) mapRef.current.flyTo([lat, lng], 18, { duration: 1 });
+                }}
+                style={{ background: "none", border: "none", fontSize: 12, color: "#6366f1", fontWeight: 600, cursor: "pointer" }}
+              >
+                Center map
+              </button>
+            </div>
+
+            <div style={{ padding: "11px 14px 18px" }}>
+              <button onClick={clearSelected}
+                style={{ width: "100%", padding: "8px 0", background: "#fff", color: "#64748b", border: "1.5px solid #e2e8f0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                ← Back to team
+              </button>
+            </div>
           </div>
         )}
       </aside>
@@ -496,54 +714,74 @@ export default function LiveMapPage() {
           style={{ height: "100%", width: "100%" }}
           whenCreated={map => (mapRef.current = map)}
         >
-          <TileLayer
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
-          />
+          <TileLayer key={tileKey} url={tile.url} attribution={tile.attr} maxZoom={19} />
 
-          <MarkerClusterGroup chunkedLoading key="stable-cluster">
+          {/* M3 */}
+          <MarkerClusterGroup
+            chunkedLoading
+            key={clusterKey}
+            showCoverageOnHover={false}
+            iconCreateFunction={cluster => new L.DivIcon({
+              html: `<div style="
+                width:38px;height:38px;border-radius:50%;
+                background:linear-gradient(135deg,#6366f1,#8b5cf6);
+                color:#fff;display:flex;align-items:center;justify-content:center;
+                font-size:13px;font-weight:800;
+                box-shadow:0 3px 14px rgba(99,102,241,0.5);
+                border:3px solid #fff;
+              ">${cluster.getChildCount()}</div>`,
+              className: "", iconSize: [38, 38], iconAnchor: [19, 19],
+            })}
+          >
             {employees
               .filter(emp => !selected || emp._id === selected._id)
               .map(emp => {
                 if (!emp.lastLocation?.lat || !emp.lastLocation?.lng) return null;
                 const { lat, lng } = emp.lastLocation;
                 return (
-                  <Marker
-                    key={emp._id}
-                    position={[lat, lng]}
-                    icon={getIcon(emp)}
-                    eventHandlers={{ click: () => handleSelect(emp) }}
+                  // M1
+                  <Marker key={`${emp._id}-${lat}-${lng}`} position={[lat, lng]}
+                    icon={getIcon(emp)} eventHandlers={{ click: () => handleSelect(emp) }}
                   >
                     <Popup>
-                      <div style={{ fontSize: 13, minWidth: 190, fontFamily: "'DM Sans',sans-serif", lineHeight: 1.6 }}>
-                        <p style={{ fontWeight: 700, fontSize: 14, margin: "0 0 1px", color: "#0f172a" }}>{emp.name}</p>
-                        <p style={{ fontSize: 11, color: "#94a3b8", margin: "0 0 8px" }}>{emp.employeeId}</p>
-                        <div style={{ borderTop: "1px solid #f1f5f9", paddingTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
-                          <PopupRow label="Location" value={`${fmtCoord(lat)}, ${fmtCoord(lng)}`} />
-                          <PopupRow label="Battery"  value={fmtBattery(emp.battery)} />
-                          {/* FIX #7: offline-first network status */}
-                          <PopupRow
-                            label="Network"
-                            value={
-                              !emp.isOnline
-                                ? "Offline"
-                                : emp.networkQuality === "weak"
-                                ? "Weak signal"
-                                : "Good"
-                            }
-                          />
-                          <PopupRow
-                            label="Status"
-                            value={emp.isOnline ? "Live" : "Offline"}
-                            valueColor={emp.isOnline ? "#16a34a" : "#ef4444"}
-                            bold
-                          />
-                          {emp.lastLocation?.timestamp && (
-                            <span style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
-                              {new Date(emp.lastLocation.timestamp).toLocaleTimeString()}
-                            </span>
-                          )}
+                      <div style={{ fontSize: 13, minWidth: 210, fontFamily: "'DM Sans','Segoe UI',sans-serif", lineHeight: 1.6 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 10 }}>
+                          <div style={{ width: 32, height: 32, borderRadius: "50%", background: emp.isOnline ? "#ecfdf5" : "#f1f5f9", color: emp.isOnline ? "#059669" : "#64748b", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 13, border: `2px solid ${emp.isOnline ? "#a7f3d0" : "#e2e8f0"}`, flexShrink: 0 }}>
+                            {emp.name?.charAt(0)?.toUpperCase()}
+                          </div>
+                          <div>
+                            <p style={{ margin: 0, fontWeight: 700, fontSize: 13, color: "#0f172a" }}>{emp.name}</p>
+                            <p style={{ margin: 0, fontSize: 10, color: "#94a3b8" }}>{emp.employeeId}</p>
+                          </div>
                         </div>
+
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px 10px", borderTop: "1px solid #f1f5f9", paddingTop: 8 }}>
+                          <MiniStat label="Battery"  value={fmtBattery(emp.battery)}  color={batteryColor(emp.battery)} />
+                          {/* S1: speed 0 is valid */}
+                          <MiniStat label="Speed"    value={fmtSpeed(emp.speed)} />
+                          <MiniStat label="Lat"      value={fmtCoord(lat)} />
+                          <MiniStat label="Lng"      value={fmtCoord(lng)} />
+                          {/* FIX #7 */}
+                          <MiniStat label="Network"
+                            value={!emp.isOnline ? "Offline" : emp.networkQuality === "weak" ? "Weak" : "Good"}
+                            color={!emp.isOnline ? "#dc2626" : emp.networkQuality === "weak" ? "#d97706" : "#059669"}
+                          />
+                          <MiniStat label="Status"
+                            value={emp.isOnline ? "Live" : "Offline"}
+                            color={emp.isOnline ? "#059669" : "#dc2626"}
+                          />
+                        </div>
+
+                        {(emp.lastPingTime || emp.lastLocation?.timestamp) && (
+                          <p style={{ margin: "8px 0 0", fontSize: 10, color: "#94a3b8" }}>
+                            {relTime(emp.lastPingTime || emp.lastLocation.timestamp)}
+                          </p>
+                        )}
+
+                        <button onClick={() => handleSelect(emp)}
+                          style={{ marginTop: 10, width: "100%", padding: "7px 0", background: "#6366f1", color: "#fff", border: "none", borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                          View details →
+                        </button>
                       </div>
                     </Popup>
                   </Marker>
@@ -553,283 +791,206 @@ export default function LiveMapPage() {
 
           {/* Live path */}
           {selected && (paths[selected.employeeId] || []).length > 1 && (
-            <Polyline
-              positions={paths[selected.employeeId]}
-              pathOptions={{ color: "#6366f1", weight: 4, opacity: 0.85 }}
-            />
+            <Polyline positions={paths[selected.employeeId]}
+              pathOptions={{ color: "#6366f1", weight: 4, opacity: 0.9 }} />
           )}
 
-          {/* Historical route */}
+          {/* Historical */}
           {selected && historyPoints.length > 1 && (
-            <Polyline
-              positions={historyPoints}
-              pathOptions={{ color: "#94a3b8", weight: 2.5, opacity: 0.55, dashArray: "6,5" }}
-            />
+            <Polyline positions={historyPoints}
+              pathOptions={{ color: isSat ? "#fbbf24" : "#94a3b8", weight: 2.5, opacity: 0.6, dashArray: "7,5" }} />
           )}
 
           <FlyToSelected selected={selected} autoFollow={autoFollow} />
         </MapContainer>
 
-        {/* Refresh button */}
-        <button
-          onClick={() => fetchEmployees(true)}
-          style={{
-            position: "absolute", top: 14, left: 14, zIndex: 1000,
-            background: "#fff", border: "1px solid #e2e8f0",
-            borderRadius: 10, padding: "8px 14px",
-            fontSize: 12, fontWeight: 600, color: "#6366f1",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
-            cursor: "pointer", display: "flex", alignItems: "center", gap: 7,
-          }}
-        >
-          <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth={2.5} strokeLinecap="round">
-            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
-            <path d="M21 3v5h-5" />
-          </svg>
-          Refresh
-        </button>
+        {/* ── Map controls ──────────────────────────────────────────────── */}
+        <div style={{ position: "absolute", top: 14, left: 14, zIndex: 1000, display: "flex", gap: 8 }}>
+          <button className="map-btn" onClick={() => fetchEmployees(true)} style={S.mapBtn}>
+            <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
+              <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>
+            </svg>
+            Refresh
+          </button>
+          <button className="map-btn" onClick={() => setTileKey(k => k === "color" ? "satellite" : "color")} style={S.mapBtn}>
+            <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
+              {tileKey === "color"
+                ? <><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></>
+                : <><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></>
+              }
+            </svg>
+            {tile.label}
+          </button>
+        </div>
 
         {/* Legend */}
         <div style={{
-          position: "absolute", top: 14, right: 14, zIndex: 1000,
-          background: "#fff", borderRadius: 12, padding: "12px 14px",
-          boxShadow: "0 2px 16px rgba(0,0,0,0.09)", border: "1px solid #e2e8f0",
-          minWidth: 165,
+          ...S.legend,
+          background: isSat ? "rgba(15,23,42,0.88)" : "#fff",
+          border:    `1px solid ${isSat ? "rgba(255,255,255,0.1)" : "#e2e8f0"}`,
         }}>
-          <p style={{ margin: "0 0 9px", fontWeight: 700, fontSize: 12, color: "#0f172a" }}>Legend</p>
-          <LegendRow dot="#22c55e" glow  label="Live · good signal" />
-          <LegendRow dot="#f59e0b" glow  label="Live · weak signal" />
-          <LegendRow dot="#e2e8f0"       label="Offline" />
-          <LegendRow line="#6366f1"      label="Live route" />
-          <LegendRow line="#94a3b8" dashed label="Historical route" />
+          <p style={{ margin: "0 0 9px", fontWeight: 700, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.6px", color: isSat ? "#fff" : "#0f172a" }}>
+            Legend
+          </p>
+          <LegRow color="#10b981" label="Live · good"  pulse sat={isSat} />
+          <LegRow color="#f59e0b" label="Live · weak"  pulse sat={isSat} />
+          <LegRow color="#94a3b8" label="Offline"             sat={isSat} />
+          <div style={{ borderTop: `1px solid ${isSat ? "rgba(255,255,255,0.1)" : "#f1f5f9"}`, margin: "7px 0" }} />
+          <LegLine color="#6366f1"                              label="Live route"    sat={isSat} />
+          <LegLine color={isSat ? "#fbbf24" : "#94a3b8"} dashed label="History route" sat={isSat} />
         </div>
 
-        {/* Selected employee card */}
-        {selected && (
-          <div style={{
-            position: "absolute", bottom: 18, left: 18, zIndex: 1000,
-            width: 304, background: "#fff",
-            borderRadius: 16, border: "1px solid #e2e8f0",
-            boxShadow: "0 8px 32px rgba(15,23,42,0.12)",
-            overflow: "hidden",
-          }}>
-            {/* Card header */}
-            <div style={{
-              padding: "14px 16px 12px",
-              background: "linear-gradient(135deg,#6366f1,#8b5cf6)",
-              display: "flex", alignItems: "center", gap: 11,
-            }}>
-              <div style={{
-                width: 40, height: 40, borderRadius: "50%",
-                background: "rgba(255,255,255,0.2)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                fontWeight: 800, fontSize: 17, color: "#fff", flexShrink: 0,
-              }}>
-                {selected.name?.charAt(0)?.toUpperCase()}
-              </div>
-              <div style={{ flex: 1 }}>
-                <p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: "#fff" }}>{selected.name}</p>
-                <p style={{ margin: "2px 0 0", fontSize: 11, color: "rgba(255,255,255,0.65)" }}>{selected.employeeId}</p>
-              </div>
-              <div style={{
-                width: 10, height: 10, borderRadius: "50%", flexShrink: 0,
-                background: selected.isOnline ? "#4ade80" : "#94a3b8",
-                boxShadow: selected.isOnline ? "0 0 0 3px rgba(74,222,128,0.35)" : "none",
-              }} />
+        {/* Mini bar — shows when detail tab open */}
+        {selected && tab === "detail" && (
+          <div style={S.miniBar}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, flex: 1, minWidth: 0 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+                background: selected.isOnline ? "#10b981" : "#94a3b8",
+                boxShadow:  selected.isOnline ? "0 0 0 3px rgba(16,185,129,0.2)" : "none" }} />
+              <span style={{ fontWeight: 700, fontSize: 13, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {selected.name}
+              </span>
             </div>
-
-            {/* Card body */}
-            <div style={{ padding: "14px 16px" }}>
-
-              {/* Stat grid */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
-                <StatBox label="Latitude"  value={fmtCoord(selected.lastLocation?.lat)} />
-                <StatBox label="Longitude" value={fmtCoord(selected.lastLocation?.lng)} />
-                <StatBox
-                  label="Battery"
-                  value={fmtBattery(selected.battery)}
-                  valueColor={batteryColor(selected.battery)}
-                />
-                {/* FIX #4: typeof guard */}
-                <StatBox
-                  label="Speed"
-                  value={typeof selected.speed === "number" && selected.speed > 0
-                    ? `${selected.speed} km/h` : "—"}
-                />
-              </div>
-
-              {/* Status row */}
-              <div style={{
-                display: "flex", justifyContent: "space-between",
-                fontSize: 12, color: "#64748b", marginBottom: 10,
-                padding: "8px 10px", background: "#f8fafc",
-                borderRadius: 8, border: "1px solid #f1f5f9",
-              }}>
-                {/* FIX #9: safe route points count */}
-                <span>
-                  Route pts:{" "}
-                  <b style={{ color: "#0f172a" }}>
-                    {pathLoading ? "…" : (paths[selected.employeeId] || []).length}
-                  </b>
+            <div style={{ display: "flex", gap: 12, fontSize: 11, flexShrink: 0 }}>
+              {/* Always show battery in mini bar even if "--" */}
+              <span style={{ color: batteryColor(selected.battery), fontWeight: 700 }}>
+                🔋 {fmtBattery(selected.battery)}
+              </span>
+              {/* S1: speed 0 valid */}
+              <span style={{ color: "#64748b" }}>
+                ⚡ {fmtSpeed(selected.speed)}
+              </span>
+              {(selected.lastPingTime || selected.lastLocation?.timestamp) && (
+                <span style={{ color: "#94a3b8" }}>
+                  {relTime(selected.lastPingTime || selected.lastLocation?.timestamp)}
                 </span>
-                <span>
-                  Status:{" "}
-                  <b style={{ color: selected.isOnline ? "#16a34a" : "#ef4444" }}>
-                    {selected.isOnline ? "Live" : "Offline"}
-                  </b>
-                </span>
-              </div>
-
-              {selected.lastLocation?.timestamp && (
-                <p style={{ fontSize: 11, color: "#94a3b8", margin: "0 0 12px" }}>
-                  Last ping: {new Date(selected.lastLocation.timestamp).toLocaleTimeString()}
-                </p>
               )}
-
-              {/* Route history picker */}
-              <div style={{
-                background: "#f8fafc", borderRadius: 10,
-                padding: "11px 12px", marginBottom: 10,
-                border: "1px solid #f1f5f9",
-              }}>
-                <label style={{
-                  fontSize: 10, fontWeight: 700, color: "#94a3b8",
-                  display: "block", marginBottom: 6,
-                  textTransform: "uppercase", letterSpacing: "0.5px",
-                }}>
-                  Route History
-                </label>
-                <input
-                  type="date"
-                  value={historyDate}
-                  onChange={e => setHistoryDate(e.target.value)}
-                  style={{
-                    width: "100%", boxSizing: "border-box",
-                    padding: "6px 10px", borderRadius: 7,
-                    border: "1.5px solid #e2e8f0", fontSize: 12,
-                    color: "#0f172a", background: "#fff", outline: "none",
-                  }}
-                />
-                <button
-                  onClick={() => loadRouteHistory(selected.employeeId)}
-                  disabled={pathLoading}
-                  style={{
-                    marginTop: 8, width: "100%", padding: "7px 0",
-                    background: pathLoading ? "#ede9fe" : "#6366f1",
-                    color:      pathLoading ? "#6366f1" : "#fff",
-                    border: "none", borderRadius: 7,
-                    fontSize: 12, fontWeight: 600,
-                    cursor: pathLoading ? "not-allowed" : "pointer",
-                    transition: "background 0.15s",
-                  }}
-                >
-                  {pathLoading ? "Loading…" : "Load Route"}
-                </button>
-              </div>
-
-              {/* Auto-follow + center */}
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <label style={{ fontSize: 12, color: "#64748b", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={autoFollow}
-                    onChange={e => setAutoFollow(e.target.checked)}
-                    style={{ accentColor: "#6366f1" }}
-                  />
-                  Auto-follow
-                </label>
-                <button
-                  onClick={() => {
-                    const { lat, lng } = selected.lastLocation || {};
-                    if (lat && lng && mapRef.current)
-                      mapRef.current.flyTo([lat, lng], 17, { duration: 1 });
-                  }}
-                  style={{
-                    background: "none", border: "none", padding: 0,
-                    fontSize: 12, color: "#6366f1", fontWeight: 600, cursor: "pointer",
-                  }}
-                >
-                  Center on map
-                </button>
-              </div>
             </div>
           </div>
         )}
       </div>
-
-      {/* Marker CSS */}
-      <style>{`
-        .lm-live    { filter: drop-shadow(0 0 7px rgba(34,197,94,0.75)); }
-        .lm-weak    { filter: drop-shadow(0 0 6px rgba(234,179,8,0.75)) hue-rotate(40deg); }
-        .lm-offline { filter: grayscale(0.8) brightness(0.8); }
-        .leaflet-popup-content-wrapper {
-          border-radius: 14px !important;
-          box-shadow: 0 6px 28px rgba(15,23,42,0.13) !important;
-          border: 1px solid #e2e8f0 !important;
-        }
-        .leaflet-popup-content { margin: 14px 16px !important; }
-        .leaflet-popup-tip-container { display: none !important; }
-      `}</style>
     </div>
   );
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
-
-function PopupRow({ label, value, valueColor = "#0f172a", bold = false }) {
+// ─── Sub-components ────────────────────────────────────────────────────────────
+function Chip({ bg, color, children }) {
   return (
-    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12 }}>
-      <span style={{ color: "#94a3b8", flexShrink: 0 }}>{label}</span>
-      <span style={{ color: valueColor, fontWeight: bold ? 700 : 500, textAlign: "right" }}>{value}</span>
-    </div>
+    <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: bg, color }}>
+      {children}
+    </span>
   );
 }
 
-function StatBox({ label, value, valueColor = "#0f172a" }) {
+function StatusPill({ active, activeText, inactiveText, activeBg, inactiveBg, activeColor, inactiveColor, activeBorder, inactiveBorder }) {
   return (
     <div style={{
-      background: "#f8fafc", borderRadius: 9, padding: "8px 10px",
-      border: "1px solid #f1f5f9",
+      display: "inline-flex", alignItems: "center", gap: 5,
+      padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600,
+      background: active ? activeBg  : inactiveBg,
+      color:      active ? activeColor : inactiveColor,
+      border:    `1px solid ${active ? activeBorder : inactiveBorder}`,
     }}>
-      <p style={{ margin: "0 0 2px", fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-        {label}
-      </p>
-      <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: valueColor }}>
-        {value}
-      </p>
+      <span style={{ width: 5, height: 5, borderRadius: "50%", background: "currentColor", display: "inline-block" }} />
+      {active ? activeText : inactiveText}
     </div>
   );
 }
 
-function LegendRow({ dot, glow, line, dashed, label }) {
+function MiniStat({ label, value, color = "#0f172a" }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7, fontSize: 12, color: "#475569" }}>
-      {dot && (
-        <div style={{
-          width: 9, height: 9, borderRadius: "50%",
-          background: dot, flexShrink: 0,
-          boxShadow: glow ? `0 0 0 3px ${dot}30` : "none",
-        }} />
-      )}
-      {line && (
-        <div style={{
-          width: 22, flexShrink: 0,
-          borderTop: dashed ? `2px dashed ${line}` : `2.5px solid ${line}`,
-        }} />
-      )}
-      <span>{label}</span>
+    <div>
+      <p style={{ margin: 0, fontSize: 9, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.4px" }}>{label}</p>
+      <p style={{ margin: "1px 0 0", fontSize: 12, fontWeight: 700, color }}>{value}</p>
+    </div>
+  );
+}
+
+function DetailStat({ label, value, valueColor = "#0f172a", bg = "#f8fafc", extra = null }) {
+  return (
+    <div style={{ background: bg, borderRadius: 9, padding: "9px 10px", border: "1px solid #f1f5f9", marginBottom: 7 }}>
+      <p style={{ margin: "0 0 2px", fontSize: 9, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.6px" }}>
+        {label}
+      </p>
+      <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: valueColor, letterSpacing: "-0.3px" }}>
+        {value}
+      </p>
+      {extra}
+    </div>
+  );
+}
+
+function BatteryBar({ pct }) {
+  const color = pct < 20 ? "#ef4444" : pct < 50 ? "#f59e0b" : "#10b981";
+  return (
+    <div style={{ marginTop: 5, height: 3, background: "#e2e8f0", borderRadius: 2, overflow: "hidden" }}>
+      <div style={{ height: "100%", width: `${Math.min(100, Math.max(0, pct))}%`, background: color, borderRadius: 2, transition: "width 0.5s ease" }} />
     </div>
   );
 }
 
 function BatteryMini({ pct }) {
-  const color = pct < 20 ? "#ef4444" : pct < 50 ? "#f59e0b" : "#22c55e";
+  const color = pct < 20 ? "#ef4444" : pct < 50 ? "#f59e0b" : "#10b981";
   const fill  = Math.max(0, Math.min(1, pct / 100));
   return (
-    <svg width={14} height={8} viewBox="0 0 14 8" style={{ flexShrink: 0 }}>
-      <rect x="0.5" y="0.5" width="11" height="7" rx="1.5" stroke={color} strokeWidth="1.2" fill="none" />
-      <rect x="11.5" y="2.5" width="1.8" height="3" rx="0.5" fill={color} />
-      <rect x="1.5" y="1.5" width={Math.max(0, Math.round(8 * fill))} height="5" rx="1" fill={color} />
+    <svg width={13} height={7} viewBox="0 0 13 7" style={{ flexShrink: 0 }}>
+      <rect x="0.5" y="0.5" width="10" height="6" rx="1.2" stroke={color} strokeWidth="1.1" fill="none"/>
+      <rect x="10.5" y="2" width="1.8" height="3" rx="0.5" fill={color}/>
+      <rect x="1.2" y="1.2" width={Math.max(0, Math.round(7.6 * fill))} height="4.6" rx="0.7" fill={color}/>
     </svg>
   );
 }
+
+function LegRow({ color, label, pulse, sat }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5, fontSize: 11, color: sat ? "#cbd5e1" : "#64748b" }}>
+      <div style={{ position: "relative", width: 8, height: 8, flexShrink: 0 }}>
+        <div style={{ width: 8, height: 8, borderRadius: "50%", background: color }} />
+        {pulse && <div style={{ position: "absolute", inset: -2, borderRadius: "50%", border: `1.5px solid ${color}`, opacity: 0.35 }} />}
+      </div>
+      {label}
+    </div>
+  );
+}
+
+function LegLine({ color, label, dashed, sat }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5, fontSize: 11, color: sat ? "#cbd5e1" : "#64748b" }}>
+      <div style={{ width: 18, borderTop: dashed ? `2px dashed ${color}` : `2.5px solid ${color}`, flexShrink: 0 }} />
+      {label}
+    </div>
+  );
+}
+
+// ─── Styles ────────────────────────────────────────────────────────────────────
+const S = {
+  root:    { display: "flex", height: "100vh", fontFamily: "'DM Sans','Segoe UI',-apple-system,sans-serif", background: "#f8fafc" },
+  sidebar: { width: 300, flexShrink: 0, display: "flex", flexDirection: "column", background: "#fff", borderRight: "1px solid #e2e8f0", zIndex: 10, overflow: "hidden" },
+  brand:   { display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: "1px solid #f1f5f9" },
+  brandIcon: { width: 30, height: 30, borderRadius: 8, flexShrink: 0, background: "linear-gradient(135deg,#6366f1,#8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(99,102,241,0.35)" },
+  tabBar:  { display: "flex", padding: "0 14px", borderBottom: "1px solid #f1f5f9", gap: 2 },
+  tab:     { flex: 1, padding: "9px 0", background: "none", border: "none", fontSize: 12, fontWeight: 600, color: "#94a3b8", cursor: "pointer", borderBottom: "2px solid transparent", marginBottom: -1, transition: "color 0.15s, border-color 0.15s", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 },
+  tabActive: { color: "#6366f1", borderBottomColor: "#6366f1" },
+  searchInput: { width: "100%", boxSizing: "border-box", padding: "8px 10px 8px 27px", border: "1.5px solid #e2e8f0", borderRadius: 8, fontSize: 12, color: "#0f172a", background: "#f8fafc", outline: "none", transition: "border-color 0.15s" },
+  syncStrip: { padding: "4px 14px", fontSize: 10, color: "#94a3b8", background: "#fafbfd", borderBottom: "1px solid #f1f5f9", display: "flex", alignItems: "center", gap: 5 },
+  sectionLabel: { margin: "0 0 7px", fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.6px" },
+  mapBtn:  { display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 13px", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 9, fontSize: 12, fontWeight: 600, color: "#374151", boxShadow: "0 1px 8px rgba(0,0,0,0.09)", cursor: "pointer" },
+  legend:  { position: "absolute", top: 14, right: 14, zIndex: 1000, borderRadius: 11, padding: "11px 13px", boxShadow: "0 2px 16px rgba(0,0,0,0.1)", minWidth: 148, transition: "background 0.3s" },
+  miniBar: { position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)", zIndex: 1000, background: "#fff", borderRadius: 12, padding: "10px 18px", boxShadow: "0 4px 24px rgba(0,0,0,0.12)", border: "1px solid #e2e8f0", display: "flex", alignItems: "center", gap: 16, minWidth: 300, maxWidth: "70vw" },
+};
+
+const GLOBAL_CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&display=swap');
+  .emp-row:hover { background: #f8faff !important; }
+  .map-btn:hover { background: #f8fafc !important; box-shadow: 0 2px 12px rgba(0,0,0,0.12) !important; }
+  .leaflet-popup-content-wrapper { border-radius: 14px !important; box-shadow: 0 8px 32px rgba(15,23,42,0.15) !important; border: 1px solid #e2e8f0 !important; padding: 0 !important; }
+  .leaflet-popup-content { margin: 14px 15px !important; }
+  .leaflet-popup-tip-container { display: none !important; }
+  .leaflet-control-zoom { border: 1px solid #e2e8f0 !important; border-radius: 10px !important; box-shadow: 0 1px 8px rgba(0,0,0,0.07) !important; overflow: hidden; }
+  .leaflet-control-zoom a { color: #374151 !important; }
+  .leaflet-control-zoom a:hover { background: #f8fafc !important; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
+`;

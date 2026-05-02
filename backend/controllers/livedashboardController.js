@@ -1,4 +1,4 @@
-const LocationLog = require("../models/LocationLog"); // or bulkLocation if that's your actual model
+const LocationLog = require("../models/bulkLocation"); // or bulkLocation if that's your actual model
 const User = require("../models/User");
 const Attendance = require("../models/Attendance");
 

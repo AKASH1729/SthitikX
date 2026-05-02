@@ -1,23 +1,43 @@
-/**
- * GeoTrack Pro - Main Server Entry Point (FINAL FIXED VERSION 🚀)
- */
-
 require('dotenv').config();
 
+const cluster = require('cluster');
+const os      = require('os');
+
+/* ─── CLUSTER MASTER ───────────────── */
+if (cluster.isMaster) {
+  const numCPUs = os.cpus().length;
+  console.log(`🧠 Master ${process.pid} — forking ${numCPUs} workers`);
+
+  for (let i = 0; i < numCPUs; i++) cluster.fork();
+
+  cluster.on('exit', (worker, code, signal) => {
+    console.warn(`⚠️ Worker ${worker.process.pid} died — restarting`);
+    cluster.fork();
+  });
+
+  return;
+}
+
+/* ─── WORKER ───────────────── */
 const express = require('express');
-const http = require('http');
+const http    = require('http');
 const { Server } = require('socket.io');
+const { createAdapter } = require('@socket.io/redis-adapter');
+const { createClient }  = require('redis');
+
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const compression = require('compression');
 const rateLimit = require('express-rate-limit');
+const RedisStore = require('rate-limit-redis').default;
 const jwt = require('jsonwebtoken');
 
 const connectDB = require('./config/database');
-const logger = require('./config/logger');
+const logger    = require('./config/logger');
 const { initializeSocket } = require('./sockets/socketManager');
 
-/* ================= ROUTES ================= */
+/* ─── ROUTES ───────────────── */
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/userRoutes');
 const userRoutesV2 = require('./routes/users');
@@ -40,16 +60,11 @@ const Fieldlocation = require('./routes/fieldRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const bulkLocationRoutes = require('./routes/bulkLocationRoutes');
 const billingRoutes = require("./routes/billingRoutes");
-
-/* ================= APP INIT ================= */
-const app = express();
-app.set("trust proxy", 1);
-
+/* ─── APP INIT ───────────────── */
+const app    = express();
 const server = http.createServer(app);
 
-/* =========================================================
-   🔥🔥🔥 CRITICAL FIX: WEBHOOK MUST COME FIRST (RAW BODY)
-========================================================= */
+
 const paymentController = require("./controllers/paymentController");
 
 app.post(
@@ -57,93 +72,121 @@ app.post(
   express.raw({ type: "application/json" }),
   paymentController.handleWebhook
 );
+/* ─── KEEP ALIVE ───────────────── */
+server.keepAliveTimeout = 65000;
+server.headersTimeout   = 66000;
 
-/* ================= BASIC MIDDLEWARE ================= */
-app.use((req, res, next) => {
-  res.setHeader("Cache-Control", "no-store");
-  next();
-});
+app.set('trust proxy', 1);
 
-/* ================= CORS ================= */
-app.use(cors({
-  origin: [
-    "http://localhost:3000",
-    "http://192.168.1.7:3000",
-    "https://sthitix.online",
-  ],
-  methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
-  credentials: true,
-}));
+/* ─── COMPRESSION ───────────────── */
+app.use(compression());
 
-/* ================= SOCKET.IO ================= */
-const io = new Server(server, {
-  cors: {
-    origin: [
-      "http://localhost:3000",
-      "http://192.168.1.7:3000",
-      "https://sthitix.online",
-    ],
-    methods: ["GET", "POST"],
-    credentials: true,
-  },
-  transports: ["websocket"],
-  pingInterval: 25000,
-  pingTimeout: 60000,
-});
-
-/* 🔐 SOCKET AUTH */
-io.use((socket, next) => {
-  try {
-    const token = socket.handshake.auth?.token;
-    if (!token) return next(new Error("Unauthorized"));
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    socket.userId = decoded.id;
-    next();
-  } catch (err) {
-    next(new Error("Invalid token"));
-  }
-});
-
-/* ================= SECURITY ================= */
-app.use(helmet());
-
-/* ================= RATE LIMIT ================= */
-const locationLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 30,
-});
-
-app.post('/api/locations/update', locationLimiter);
-app.get('/api/locations/live', locationLimiter);
-
-app.use('/api/', rateLimit({
-  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 900000),
-  max: Number(process.env.RATE_LIMIT_MAX || 100),
-}));
-
-app.use('/api/auth/', rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-}));
-
-/* =========================================================
-   ✅ NORMAL BODY PARSER (AFTER WEBHOOK)
-========================================================= */
+/* ─── BODY PARSER ───────────────── */
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-/* ================= LOGGER ================= */
-app.use(morgan('combined', {
+/* ─── CORS ───────────────── */
+const ALLOWED_ORIGINS = [
+  'http://localhost:3000',
+  'https://sthitix.online',
+];
+
+app.use(cors({
+  origin: ALLOWED_ORIGINS,
+  credentials: true,
+}));
+
+/* ─── HELMET ───────────────── */
+app.use(helmet());
+
+/* ─── LOGGER ───────────────── */
+app.use(morgan('dev', {
   stream: { write: msg => logger.info(msg.trim()) }
 }));
 
-/* ================= SOCKET ATTACH ================= */
+/* ─── REDIS FIX (IMPORTANT) ───────────────── */
+const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+
+const pubClient = createClient({
+  url: redisUrl,
+  socket: {
+    reconnectStrategy: (retries) => {
+      if (retries > 10) return new Error('Redis reconnect limit');
+      return Math.min(retries * 100, 3000);
+    },
+    connectTimeout: 5000,
+  },
+});
+
+const subClient = pubClient.duplicate();
+
+pubClient.on('error', (err) =>
+  console.warn(`⚠️ Redis pub error: ${err.message}`)
+);
+
+subClient.on('error', (err) =>
+  console.warn(`⚠️ Redis sub error: ${err.message}`)
+);
+
+/* ─── SOCKET.IO ───────────────── */
+const io = new Server(server, {
+  cors: {
+    origin: ALLOWED_ORIGINS,
+    credentials: true,
+  },
+  transports: ['websocket', 'polling'],
+  pingInterval: 25000,
+  pingTimeout: 20000,
+});
+
+/* 🔥 FIX: connect Redis FIRST, then attach adapter */
+const connectRedis = async () => {
+  try {
+    await Promise.all([pubClient.connect(), subClient.connect()]);
+    io.adapter(createAdapter(pubClient, subClient));
+
+    console.log(`✅ Worker ${process.pid} — Redis adapter ready`);
+  } catch (err) {
+    console.warn(`⚠️ Redis unavailable — using memory: ${err.message}`);
+  }
+};
+
+connectRedis();
+
+/* ─── SOCKET AUTH ───────────────── */
+io.use((socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('Unauthorized'));
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    socket.userId = decoded.id;
+    next();
+  } catch {
+    next(new Error('Invalid token'));
+  }
+});
+
+/* ─── RATE LIMIT ───────────────── */
+const makeLimit = (windowMs, max) => rateLimit({
+  windowMs,
+  max,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: pubClient.isReady
+    ? new RedisStore({ sendCommand: (...args) => pubClient.sendCommand(args) })
+    : undefined,
+});
+
+app.use('/api/bulk-location', makeLimit(60000, 120));
+app.use('/api/', makeLimit(900000, 500));
+
+/* ─── ATTACH IO ───────────────── */
 app.use((req, res, next) => {
   req.io = io;
   next();
 });
 
-/* ================= ROUTES ================= */
+/* ─── ROUTES ───────────────── */
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/v2/users', userRoutesV2);
@@ -165,47 +208,32 @@ app.use('/api/super-admin', superAdminRoutes);
 app.use("/api/bulk-location", bulkLocationRoutes);
 app.use("/api/field-locations", Fieldlocation);
 app.use("/api/payment", paymentRoutes);
-
-/* ================= HEALTH ================= */
+/* ─── HEALTH ───────────────── */
 app.get('/api/health', (req, res) => {
-  res.json({ success: true, message: 'API running 🚀' });
-});
-
-/* ================= 404 ================= */
-app.use((req, res) => {
-  res.status(404).json({ success: false, message: 'Route not found' });
-});
-
-/* ================= ERROR HANDLER ================= */
-app.use((err, req, res, next) => {
-  console.error(err);
-  logger.error(err.message);
-  res.status(500).json({
-    success: false,
-    message: err.message || 'Internal Server Error'
+  res.json({
+    success: true,
+    worker: process.pid,
   });
 });
 
-/* ================= SOCKET INIT ================= */
+/* ─── SOCKET INIT ───────────────── */
 initializeSocket(io);
 
-/* ================= START ================= */
+/* ─── START ───────────────── */
 const startServer = async () => {
-  try {
-    await connectDB();
-    const PORT = process.env.PORT || 5000;
-    const HOST = process.env.HOST || '0.0.0.0';
+  await connectDB();
+  const PORT = process.env.PORT || 5000;
 
-    server.listen(PORT, HOST, () => {
-      logger.info(`🚀 Server running at http://${HOST}:${PORT}`);
-    });
-
-  } catch (error) {
-    logger.error(`❌ Server start failed: ${error.message}`);
-    process.exit(1);
-  }
+  server.listen(PORT, () => {
+    console.log(`🚀 Worker ${process.pid} running on port ${PORT}`);
+  });
 };
 
 startServer();
 
-module.exports = { app, server, io };
+/* ─── SHUTDOWN ───────────────── */
+process.on('SIGTERM', async () => {
+  await pubClient.quit();
+  await subClient.quit();
+  process.exit(0);
+});

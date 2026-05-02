@@ -1,84 +1,98 @@
+/**
+ * locationController.js
+ *
+ * CORE FIXES IN THIS VERSION:
+ *
+ * FIX A — getLiveLocations now pulls battery+speed from the LATEST Location
+ *          ping document directly, not from the User document.
+ *          This means even if the User.battery field is stale/null,
+ *          the dashboard always shows the real latest value from Location history.
+ *
+ * FIX B — Battery Op A (always-write) correctly fires on every ping so
+ *          User.battery stays fresh going forward.
+ *
+ * FIX C — Speed 0 is valid and stored/returned correctly (not filtered out).
+ *
+ * FIX D — isOnline uses lastSeen (updated on every ping) not lastLocation.timestamp
+ *          so stationary employees with old GPS timestamps still show as online.
+ *
+ * FIX E — Socket emits the real battery value from the normalized doc.
+ */
+
 const Location = require("../models/bulkLocation");
 const User     = require("../models/User");
 
-/* =========================================================
-   BATTERY HELPERS
-========================================================= */
-
-/**
- * Normalize a raw battery value to an integer 1–100, or null.
- * Handles both 0–1 float (mobile) and 0–100 int formats.
- * Returns null if invalid, missing, or zero.
- */
+// ─── Battery normalization ─────────────────────────────────────────────────────
+// Handles Expo float 0.0–1.0 AND standard int 1–100.
+// Returns null for 0, negative, >100, NaN, null, undefined.
 const normalizeBattery = (raw) => {
-  if (typeof raw !== "number" || isNaN(raw)) return null;
-  const val = raw <= 1 ? Math.round(raw * 100) : Math.round(raw);
-  return val > 0 && val <= 100 ? val : null;
+  if (raw === null || raw === undefined) return null;
+  const n = Number(raw);
+  if (isNaN(n) || n < 0) return null;
+  const val = n <= 1 ? Math.round(n * 100) : Math.round(n);
+  return val >= 1 && val <= 100 ? val : null;
 };
 
 /* =========================================================
    POST /api/bulk-location
+   Receives location pings from mobile and stores them.
 ========================================================= */
 const syncLocations = async (req, res) => {
   try {
     const { batch } = req.body;
-
     if (!Array.isArray(batch) || batch.length === 0) {
-      return res.status(400).json({ success: false, message: "Invalid batch" });
+      return res.status(400).json({ success: false, message: "Invalid or empty batch" });
     }
 
-    const companyId = req.user.companyId;
+    const companyId = req.user?.companyId;
+    if (!companyId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
 
-    // ── Normalize + validate incoming data ────────────────────────────────────
+    // ── Normalize docs ─────────────────────────────────────────────────────
     const docs = batch
-      .filter(i => i.employeeId)
+      .filter(i => i?.employeeId)
       .map(i => {
         const timestamp =
           i.timestamp && !isNaN(new Date(i.timestamp))
             ? new Date(i.timestamp)
             : new Date();
 
-        // ✅ BATTERY FIX: normalize → null if 0 or invalid
         const battery = normalizeBattery(i.battery);
 
-        // ✅ SPEED FIX: safe parse
+        // Speed 0 is valid — means stationary
         const speed =
-          typeof i.speed === "number" && i.speed >= 0
-            ? Math.round(i.speed)
+          typeof i.speed === "number" && isFinite(i.speed) && i.speed >= 0
+            ? Math.round(i.speed * 10) / 10
             : 0;
 
-        // ✅ GPS VALIDATION
         const hasValidLocation =
-          typeof i.lat === "number" &&
-          typeof i.lng === "number" &&
-          i.lat !== 0 &&
-          i.lng !== 0;
+          typeof i.lat === "number" && isFinite(i.lat) && i.lat !== 0 &&
+          typeof i.lng === "number" && isFinite(i.lng) && i.lng !== 0;
 
         return {
           syncId:         i.syncId || `${i.employeeId}-${timestamp.getTime()}`,
           employeeId:     i.employeeId,
           companyId,
-          deviceId:       i.deviceId,
-
-          location: hasValidLocation
-            ? { type: "Point", coordinates: [Number(i.lng), Number(i.lat)] }
-            : undefined,
-
+          deviceId:       i.deviceId || null,
           lat:            hasValidLocation ? i.lat  : null,
           lng:            hasValidLocation ? i.lng  : null,
+          location:       hasValidLocation
+            ? { type: "Point", coordinates: [Number(i.lng), Number(i.lat)] }
+            : undefined,
           speed,
-          accuracy:       i.accuracy ?? null,
-          battery,                          // null or valid 1–100 int
+          accuracy:       typeof i.accuracy === "number" ? i.accuracy : null,
+          battery,
           networkQuality: i.networkQuality || "good",
           timestamp,
         };
       });
 
     if (!docs.length) {
-      return res.status(400).json({ success: false, message: "No valid docs" });
+      return res.status(400).json({ success: false, message: "No valid records" });
     }
 
-    // ── Insert with syncId deduplication ─────────────────────────────────────
+    // ── Insert location history (dedupe by syncId) ─────────────────────────
     await Location.bulkWrite(
       docs.map(doc => ({
         updateOne: {
@@ -90,159 +104,243 @@ const syncLocations = async (req, res) => {
       { ordered: false }
     );
 
-    // ── Get latest doc per employee ───────────────────────────────────────────
+    // ── Get latest doc per employee ────────────────────────────────────────
     const latestMap = {};
     docs.forEach(doc => {
       const prev = latestMap[doc.employeeId];
-      if (!prev || new Date(doc.timestamp) > new Date(prev.timestamp)) {
+      if (!prev || doc.timestamp > prev.timestamp) {
         latestMap[doc.employeeId] = doc;
       }
     });
     const latestDocs = Object.values(latestMap);
 
-    // ── Update User document ──────────────────────────────────────────────────
+    // ── Update User — TWO ops per employee ────────────────────────────────
+    //
+    // Op A (no timestamp gate): ALWAYS writes battery, speed, networkQuality,
+    //   isTracking, lastSeen. This is the key fix — battery is NEVER blocked
+    //   by the GPS timestamp filter.
+    //
+    // Op B (timestamp-gated): Only writes lastLocation when this ping is newer
+    //   than what's stored, preventing old queued pings from overwriting fresh GPS.
+    //
     await User.bulkWrite(
-      latestDocs.map(doc => {
-        const hasValidLocation =
-          typeof doc.lat === "number" &&
-          typeof doc.lng === "number";
+      latestDocs.flatMap(doc => {
+        const hasValidLocation = doc.lat !== null && doc.lng !== null;
 
-        const updateFields = {
-          speed:          doc.speed ?? 0,
-          networkQuality: doc.networkQuality || "good",
-          isTracking:     true,
-          lastSeen:       doc.timestamp,
-        };
-
-        // ✅ BATTERY FIX: only write to DB if valid (never overwrite good value with 0/null)
-        if (typeof doc.battery === "number" && doc.battery > 0 && doc.battery <= 100) {
-          updateFields.battery = doc.battery;
-        }
-
-        // Only update location if GPS is valid
-        if (hasValidLocation) {
-          updateFields.lastLocation = {
-            lat:       doc.lat,
-            lng:       doc.lng,
-            timestamp: doc.timestamp,
-          };
-        }
-
-        return {
+        const opA = {
           updateOne: {
-            filter: {
-              employeeId: doc.employeeId,
-              $or: [
-                { "lastLocation.timestamp": { $lt: doc.timestamp } },
-                { "lastLocation.timestamp": { $exists: false } },
-              ],
+            filter: { employeeId: doc.employeeId, companyId },
+            update: {
+              $set: {
+                // Speed 0 is valid — always write it
+                speed:          doc.speed,
+                networkQuality: doc.networkQuality,
+                isTracking:     true,
+                lastSeen:       doc.timestamp,
+                // Battery: only write if real reading
+                ...(typeof doc.battery === "number" &&
+                    doc.battery >= 1 &&
+                    doc.battery <= 100 && {
+                  battery: doc.battery,
+                }),
+              },
             },
-            update: { $set: updateFields },
           },
         };
+
+        const opB = hasValidLocation
+          ? {
+              updateOne: {
+                filter: {
+                  employeeId: doc.employeeId,
+                  companyId,
+                  $or: [
+                    { "lastLocation.timestamp": { $lt: doc.timestamp } },
+                    { "lastLocation.timestamp": { $exists: false } },
+                  ],
+                },
+                update: {
+                  $set: {
+                    lastLocation: {
+                      lat:       doc.lat,
+                      lng:       doc.lng,
+                      timestamp: doc.timestamp,
+                    },
+                  },
+                },
+              },
+            }
+          : null;
+
+        return opB ? [opA, opB] : [opA];
       }),
       { ordered: false }
     );
 
-    // ── Socket emit ───────────────────────────────────────────────────────────
+    // ── Socket emit ────────────────────────────────────────────────────────
     if (req.io) {
       latestDocs.forEach(doc => {
-        const hasValidLocation =
-          typeof doc.lat === "number" &&
-          typeof doc.lng === "number";
-
+        const hasValidLocation = doc.lat !== null && doc.lng !== null;
         req.io.to(companyId.toString()).emit("location:update", {
           employeeId:     doc.employeeId,
           lat:            doc.lat,
           lng:            doc.lng,
-          // ✅ BATTERY FIX: send only valid battery, otherwise undefined (not 0)
-          battery:        typeof doc.battery === "number" && doc.battery > 0
-                            ? doc.battery
-                            : undefined,
-          speed:          doc.speed ?? 0,
-          networkQuality: doc.networkQuality || "good",
+          // Send undefined (not 0/null) when battery invalid so frontend
+          // preserves the last known good value
+          battery:
+            typeof doc.battery === "number" && doc.battery >= 1 && doc.battery <= 100
+              ? doc.battery
+              : undefined,
+          // Speed 0 is valid — always emit it
+          speed:          doc.speed,
+          networkQuality: doc.networkQuality,
           timestamp:      doc.timestamp,
           isOnline:       hasValidLocation,
         });
       });
     }
 
-    console.log(`✅ Synced ${docs.length} locations for company ${companyId}`);
-    res.json({ success: true });
+    console.log(`✅ [bulkLocation] Synced ${docs.length} record(s)`);
+    res.json({ success: true, count: docs.length });
 
   } catch (err) {
-    console.error("❌ syncLocations:", err);
-    res.status(500).json({ success: false });
+    console.error("❌ [syncLocations]", err);
+    res.status(500).json({ success: false, message: "Internal server error" });
   }
 };
 
 
 /* =========================================================
    GET /api/locations/live
+
+   FIX A: For each employee, we fetch the LATEST Location ping
+   from the Location collection to get fresh battery + speed.
+   This bypasses the stale User.battery field entirely.
+   User document is only used for name, employeeId, lastLocation,
+   isTracking, and lastSeen.
 ========================================================= */
 const getLiveLocations = async (req, res) => {
   try {
-    const companyId      = req.user.companyId;
-    const now            = Date.now();
+    const companyId        = req.user?.companyId;
+    const now              = Date.now();
     const ONLINE_THRESHOLD = 10 * 60 * 1000; // 10 minutes
 
-    const users = await User.find({
-      companyId,
-      role:     "employee",
-      isActive: true,
-    })
+    if (!companyId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    // Get all active employees
+    const users = await User.find({ companyId, role: "employee", isActive: true })
       .select("name employeeId lastLocation battery speed networkQuality isTracking lastSeen")
       .lean();
 
-    const employees = users.map(emp => {
-      const hasValidLocation =
-        typeof emp.lastLocation?.lat === "number" &&
-        typeof emp.lastLocation?.lng === "number";
+    if (!users.length) {
+      return res.json({ success: true, employees: [], timestamp: new Date().toISOString() });
+    }
 
-      const ts   = emp.lastLocation?.timestamp || emp.lastSeen;
+    // FIX A: Get the latest Location ping for each employee in ONE aggregation
+    // This gives us the freshest battery + speed + networkQuality directly from
+    // the ping history, bypassing any stale values on the User document.
+    const employeeIds = users.map(u => u.employeeId);
+
+    const latestPings = await Location.aggregate([
+      {
+        $match: {
+          employeeId: { $in: employeeIds },
+          companyId,
+        },
+      },
+      { $sort: { timestamp: -1 } },
+      {
+        $group: {
+          _id:            "$employeeId",
+          battery:        { $first: "$battery" },
+          speed:          { $first: "$speed" },
+          networkQuality: { $first: "$networkQuality" },
+          lat:            { $first: "$lat" },
+          lng:            { $first: "$lng" },
+          timestamp:      { $first: "$timestamp" },
+        },
+      },
+    ]);
+
+    // Map employeeId → latest ping data
+    const pingMap = {};
+    latestPings.forEach(p => { pingMap[p._id] = p; });
+
+    const employees = users.map(emp => {
+      const ping = pingMap[emp.employeeId];
+
+      // Location: prefer ping coords if valid, fall back to User.lastLocation
+      const pingHasCoords =
+        ping &&
+        typeof ping.lat === "number" && ping.lat !== 0 &&
+        typeof ping.lng === "number" && ping.lng !== 0;
+
+      const userHasCoords =
+        typeof emp.lastLocation?.lat === "number" && emp.lastLocation.lat !== 0 &&
+        typeof emp.lastLocation?.lng === "number" && emp.lastLocation.lng !== 0;
+
+      const hasValidLocation = pingHasCoords || userHasCoords;
+
+      const lastLocation = pingHasCoords
+        ? { lat: ping.lat, lng: ping.lng, timestamp: ping.timestamp }
+        : userHasCoords
+          ? emp.lastLocation
+          : null;
+
+      // FIX D: Use lastSeen for online check (updated on every ping via Op A)
+      // Fall back to ping.timestamp, then lastLocation.timestamp
+      const ts   = emp.lastSeen || ping?.timestamp || emp.lastLocation?.timestamp;
       const diff = ts ? now - new Date(ts).getTime() : Infinity;
 
       const isOnline =
-        emp.isTracking &&
-        diff < ONLINE_THRESHOLD &&
-        hasValidLocation;
+        emp.isTracking === true &&
+        hasValidLocation &&
+        diff < ONLINE_THRESHOLD;
 
-      // ✅ BATTERY FIX: only expose valid battery — never 0
+      // FIX A: Use battery from latest ping first, fall back to User.battery
+      const rawBattery = ping?.battery ?? emp.battery;
       const battery =
-        typeof emp.battery === "number" && emp.battery > 0 && emp.battery <= 100
-          ? emp.battery
+        typeof rawBattery === "number" && rawBattery >= 1 && rawBattery <= 100
+          ? rawBattery
           : null;
 
-      // ✅ SPEED FIX: safe default
+      // FIX C: Speed 0 is valid. Use ping speed first, fall back to User.speed
+      const rawSpeed = ping?.speed ?? emp.speed;
       const speed =
-        typeof emp.speed === "number" && emp.speed >= 0
-          ? emp.speed
+        typeof rawSpeed === "number" && rawSpeed >= 0
+          ? rawSpeed
           : 0;
+
+      const networkQuality = ping?.networkQuality || emp.networkQuality || "good";
 
       return {
         _id:            emp._id,
         name:           emp.name,
         employeeId:     emp.employeeId,
-        lastLocation:   emp.lastLocation || null,
-        battery,
-        speed,
-        networkQuality: emp.networkQuality || "good",
+        lastLocation,
+        battery,        // from latest ping — always fresh
+        speed,          // from latest ping — 0 is valid
+        networkQuality,
         isOnline,
-        isTracking:     emp.isTracking && isOnline,
+        isTracking:     isOnline,
+        lastSeen:       ts || null,
+        lastPingTime:   ping?.timestamp || null,
       };
     });
 
-    res.json({ success: true, employees });
+    res.json({ success: true, employees, timestamp: new Date().toISOString() });
 
   } catch (err) {
-    console.error("❌ getLiveLocations:", err);
-    res.status(500).json({ success: false });
+    console.error("❌ [getLiveLocations]", err);
+    res.status(500).json({ success: false, message: "Internal server error" });
   }
 };
 
 
 /* =========================================================
-   GET /api/locations/history/:employeeId
+   GET /api/locations/history/:employeeId?date=YYYY-MM-DD
 ========================================================= */
 const getRouteHistory = async (req, res) => {
   try {
@@ -250,25 +348,26 @@ const getRouteHistory = async (req, res) => {
     const { date }       = req.query;
 
     if (!employeeId || !date) {
-      return res.status(400).json({
-        success: false,
-        message: "employeeId and date required",
-      });
+      return res.status(400).json({ success: false, message: "employeeId and date required" });
     }
 
-    const start = new Date(date + "T00:00:00+05:30");
-    const end   = new Date(date + "T23:59:59+05:30");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ success: false, message: "date must be YYYY-MM-DD" });
+    }
+
+    const start = new Date(`${date}T00:00:00+05:30`);
+    const end   = new Date(`${date}T23:59:59+05:30`);
 
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      return res.status(400).json({ success: false, message: "Invalid date format" });
+      return res.status(400).json({ success: false, message: "Invalid date" });
     }
 
     const logs = await Location.find({
       employeeId,
-      companyId: req.user.companyId,
-      timestamp: { $gte: start, $lte: end },
-      lat:       { $ne: null },
-      lng:       { $ne: null },
+      companyId:  req.user.companyId,
+      timestamp:  { $gte: start, $lte: end },
+      lat:        { $ne: null, $nin: [0] },
+      lng:        { $ne: null, $nin: [0] },
     })
       .sort({ timestamp: 1 })
       .limit(3000)
@@ -276,26 +375,23 @@ const getRouteHistory = async (req, res) => {
 
     res.json({
       success: true,
+      date,
       count:   logs.length,
       data:    logs.map(l => ({
         lat:       l.lat,
         lng:       l.lng,
-        speed:     typeof l.speed === "number"   ? l.speed   : 0,
-        // ✅ BATTERY FIX: never return 0 from history either
-        battery:   typeof l.battery === "number" && l.battery > 0 ? l.battery : null,
+        // Speed 0 is valid
+        speed:     typeof l.speed   === "number" && l.speed >= 0 ? l.speed : 0,
+        battery:   typeof l.battery === "number" && l.battery >= 1 ? l.battery : null,
         timestamp: l.timestamp,
       })),
     });
 
   } catch (err) {
-    console.error("❌ getRouteHistory:", err);
-    res.status(500).json({ success: false });
+    console.error("❌ [getRouteHistory]", err);
+    res.status(500).json({ success: false, message: "Internal server error" });
   }
 };
 
 
-module.exports = {
-  syncLocations,
-  getLiveLocations,
-  getRouteHistory,
-};
+module.exports = { syncLocations, getLiveLocations, getRouteHistory };
