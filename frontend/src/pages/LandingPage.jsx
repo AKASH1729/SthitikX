@@ -52,7 +52,7 @@ function Navbar({ openPricing }) {
           <motion.a
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            href="https://sthitix.s3.ap-south-1.amazonaws.com/sthitix.apk"
+            href="https://sthitix123.s3.eu-north-1.amazonaws.com/sthitix.apk"
             download
             className="bg-gradient-to-r from-green-500 to-green-600 text-white px-5 py-2 rounded-lg shadow hover:shadow-md transition-all flex items-center gap-2"
           >
