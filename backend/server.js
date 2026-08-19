@@ -1,22 +1,5 @@
 require('dotenv').config();
 
-const cluster = require('cluster');
-const os      = require('os');
-
-/* ─── CLUSTER MASTER ───────────────── */
-if (cluster.isMaster) {
-  const numCPUs = os.cpus().length;
-  console.log(`🧠 Master ${process.pid} — forking ${numCPUs} workers`);
-
-  for (let i = 0; i < numCPUs; i++) cluster.fork();
-
-  cluster.on('exit', (worker, code, signal) => {
-    console.warn(`⚠️ Worker ${worker.process.pid} died — restarting`);
-    cluster.fork();
-  });
-
-  return;
-}
 
 /* ─── WORKER ───────────────── */
 const express = require('express');

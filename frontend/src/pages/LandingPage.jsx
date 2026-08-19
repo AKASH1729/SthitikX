@@ -105,7 +105,7 @@ function Navbar({ openPricing }) {
               {/* ✅ NEW: Download App button (mobile) */}
               <motion.a
                 whileTap={{ scale: 0.95 }}
-                href="https://sthitix.s3.ap-south-1.amazonaws.com/sthitix.apk"
+                href="https://sthitix123.s3.eu-north-1.amazonaws.com/sthitix.apk"
                 download
                 className="bg-gradient-to-r from-green-500 to-green-600 text-white px-5 py-2 rounded-lg shadow flex items-center justify-center gap-2"
               >

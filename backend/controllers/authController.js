@@ -134,16 +134,25 @@ const verifyEmail = async (req, res) => {
     }
 
     /* 🆓 TRIAL */
-    if (data.plan === "trial") {
-      const company = await Company.create({
-        name: data.companyName,
-        email: data.email,
-        plan: "trial",
-        planPrice: 0,
-        baseEmployees: 50,
-        extraEmployeePrice: 30,
-        trialExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      });
+	if (data.plan === "trial") {
+
+  const slug = data.companyName
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "");
+
+  const company = await Company.create({
+    name: data.companyName,
+    slug: slug,
+    email: data.email,
+    plan: "trial",
+    planPrice: 0,
+    baseEmployees: 50,
+    extraEmployeePrice: 30,
+    trialExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+  });
+
 
       const bcrypt = require("bcryptjs");
       const hashedPassword = await bcrypt.hash(data.password, 10);
